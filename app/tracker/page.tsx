@@ -23,6 +23,7 @@ import {
   LogOut,
   ArrowLeftRight,
   PoundSterling,
+  List,
 } from "lucide-react"
 import { seedInitialData } from "@/app/actions/seed-data"
 
@@ -195,10 +196,13 @@ export default function MileageTrackerPage() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       const currentUser = session?.user || null
+      // Only update user if the ID has changed to prevent unnecessary re-renders/fetches
+      setUser((prevUser: any) => {
+        if (prevUser?.id === currentUser?.id) return prevUser
+        return currentUser
+      })
       if (!currentUser) {
         router.push("/auth/login")
-      } else {
-        setUser(currentUser)
       }
     })
 
@@ -206,7 +210,10 @@ export default function MileageTrackerPage() {
       if (!user) {
         router.push("/auth/login")
       } else {
-        setUser(user)
+        setUser((prevUser: any) => {
+          if (prevUser?.id === user.id) return prevUser
+          return user
+        })
       }
     })
 
@@ -217,7 +224,10 @@ export default function MileageTrackerPage() {
     if (!user) return
 
     const fetchData = async () => {
-      setIsLoading(true)
+      // Only set loading if we don't have data yet to prevent flashing/resetting
+      if (locations.length === 0 && savedRoutes.length === 0 && entries.length === 0) {
+        setIsLoading(true)
+      }
       console.log("[v0] Fetching initial data...")
 
       const [locationsRes, routesRes, entriesRes] = await Promise.all([
@@ -245,7 +255,10 @@ export default function MileageTrackerPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "locations" }, (payload) => {
         console.log("[v0] Location change:", payload.eventType, payload.new)
         if (payload.eventType === "INSERT") {
-          setLocations((prev) => [...prev, payload.new as Location].sort((a, b) => a.name.localeCompare(b.name)))
+          setLocations((prev) => {
+            if (prev.some((loc) => loc.id === payload.new.id)) return prev
+            return [...prev, payload.new as Location].sort((a, b) => a.name.localeCompare(b.name))
+          })
         } else if (payload.eventType === "DELETE") {
           setLocations((prev) => prev.filter((loc) => loc.id !== payload.old.id))
         } else if (payload.eventType === "UPDATE") {
@@ -255,9 +268,10 @@ export default function MileageTrackerPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "saved_routes" }, (payload) => {
         console.log("[v0] Route change:", payload.eventType, payload.new)
         if (payload.eventType === "INSERT") {
-          setSavedRoutes((prev) =>
-            [...prev, payload.new as SavedRoute].sort((a, b) => a.from.localeCompare(b.from)),
-          )
+          setSavedRoutes((prev) => {
+            if (prev.some((route) => route.id === payload.new.id)) return prev
+            return [...prev, payload.new as SavedRoute].sort((a, b) => a.from.localeCompare(b.from))
+          })
         } else if (payload.eventType === "DELETE") {
           setSavedRoutes((prev) => prev.filter((route) => route.id !== payload.old.id))
         } else if (payload.eventType === "UPDATE") {
@@ -270,6 +284,7 @@ export default function MileageTrackerPage() {
         console.log("[v0] Entry change:", payload.eventType, payload.new || payload.old)
         if (payload.eventType === "INSERT") {
           setEntries((prev) => {
+            if (prev.some((entry) => entry.id === payload.new.id)) return prev
             const newEntry = payload.new as Entry
             console.log("[v0] Adding entry to list:", newEntry.id, newEntry.date)
             return [newEntry, ...prev]
@@ -326,29 +341,54 @@ export default function MileageTrackerPage() {
     newLoc: Omit<Location, "id" | "createdat">, // Changed from created_at to createdat
   ) => {
     if (!user) throw new Error("Not authenticated")
-    await supabase.from("locations").insert({ ...newLoc, userid: user.id }) // Changed from user_id to userid
+    const { data, error } = await supabase
+      .from("locations")
+      .insert({ ...newLoc, userid: user.id })
+      .select()
+    if (error) throw error
+    if (data) {
+      setLocations((prev) => [...prev, data[0] as Location].sort((a, b) => a.name.localeCompare(b.name)))
+    }
   }
 
   const handleDeleteLocation = async (id: string) => {
-    await supabase.from("locations").delete().eq("id", id)
+    const { error } = await supabase.from("locations").delete().eq("id", id)
+    if (error) throw error
+    setLocations((prev) => prev.filter((loc) => loc.id !== id))
   }
 
   // Updated handleAddRoute
   const handleAddRoute = async (newRoute: { from: string; to: string; distance: string }) => {
     if (!user) return
-    await supabase.from("saved_routes").insert({ ...newRoute, userid: user.id })
+    const { data, error } = await supabase
+      .from("saved_routes")
+      .insert({ ...newRoute, userid: user.id })
+      .select()
+    if (error) throw error
+    if (data) {
+      setSavedRoutes((prev) => [...prev, data[0] as SavedRoute].sort((a, b) => a.from.localeCompare(b.from)))
+    }
   }
 
   // Updated handleUpdateRoute
   const handleUpdateRoute = async (id: string, updatedRoute: { from: string; to: string; distance: string }) => {
-    await supabase
+    const { data, error } = await supabase
       .from("saved_routes")
       .update({ ...updatedRoute, updatedat: new Date().toISOString() })
       .eq("id", id)
+      .select()
+    if (error) throw error
+    if (data) {
+      setSavedRoutes((prev) =>
+        prev.map((route) => (route.id === id ? (data[0] as SavedRoute) : route)),
+      )
+    }
   }
 
   const handleDeleteRoute = async (id: string) => {
-    await supabase.from("saved_routes").delete().eq("id", id)
+    const { error } = await supabase.from("saved_routes").delete().eq("id", id)
+    if (error) throw error
+    setSavedRoutes((prev) => prev.filter((route) => route.id !== id))
   }
 
   // Updated handleAddEntry
@@ -1299,21 +1339,24 @@ const LocationsView = ({
   user: { id: string } | null
   locations: Location[]
   savedRoutes: SavedRoute[]
-  onAddLocation: (loc: Omit<Location, "id">) => Promise<void> // Removed createdat from Omit as it's not in the new Location interface
+  onAddLocation: (loc: Omit<Location, "id">) => Promise<void>
   onDeleteLocation: (id: string) => Promise<void>
-  onAddRoute: (route: { from: string; to: string; distance: string }) => Promise<void> // Updated param type
-  onUpdateRoute: (id: string, route: { from: string; to: string; distance: string }) => Promise<void> // Updated param type
+  onAddRoute: (route: { from: string; to: string; distance: string }) => Promise<void>
+  onUpdateRoute: (id: string, route: { from: string; to: string; distance: string }) => Promise<void>
   onDeleteRoute: (id: string) => Promise<void>
 }) => {
   const [newLoc, setNewLoc] = useState({ name: "", address: "", city: "", postcode: "", category: "Client" })
-  const [newRoute, setNewRoute] = useState({ from: "", to: "", distance: "" }) // Changed from from_location, to_location
+  const [newRoute, setNewRoute] = useState({ from: "", to: "", distance: "" })
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
+  const [mobileTab, setMobileTab] = useState("add-location")
 
   const handleLocSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newLoc.name) return
     await onAddLocation(newLoc)
     setNewLoc({ name: "", address: "", city: "", postcode: "", category: "Client" })
+    // On mobile, switch to list view after adding
+    if (window.innerWidth < 768) setMobileTab("view-locations")
   }
 
   const handleRouteSubmit = async (e: React.FormEvent) => {
@@ -1344,11 +1387,16 @@ const LocationsView = ({
       await onAddRoute(newRoute)
     }
     setNewRoute({ from: "", to: "", distance: "" })
+    // On mobile, switch to list view after adding
+    if (window.innerWidth < 768) setMobileTab("view-routes")
   }
 
   const handleEditRouteClick = (route: SavedRoute) => {
     setNewRoute({ from: route.from, to: route.to, distance: route.distance })
     setEditingRouteId(route.id)
+    // On mobile, switch to add view (which is now edit view)
+    if (window.innerWidth < 768) setMobileTab("add-route")
+    window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
   const handleCancelRouteEdit = () => {
@@ -1356,13 +1404,80 @@ const LocationsView = ({
     setEditingRouteId(null)
   }
 
+  const uniqueKeys = new Set<string>()
+  const sortedRoutes = [...savedRoutes]
+    .map((route) => {
+      let from = route.from
+      let to = route.to
+      // Normalize: Prefer Home or Office as the 'from' location
+      if (to === "Home" || (to === "Office" && from !== "Home")) {
+        ;[from, to] = [to, from]
+      }
+      return { ...route, displayFrom: from, displayTo: to }
+    })
+    .filter((route) => {
+      const key = `${route.displayFrom}|${route.displayTo}`
+      if (uniqueKeys.has(key)) return false
+      uniqueKeys.add(key)
+      return true
+    })
+    .sort((a, b) => {
+      const res = a.displayFrom.localeCompare(b.displayFrom)
+      if (res !== 0) return res
+      return a.displayTo.localeCompare(b.displayTo)
+    })
+
   const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Mobile Navigation Tabs */}
+      <div className="md:hidden grid grid-cols-4 gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm mb-6 sticky top-20 z-40">
+        <button
+          onClick={() => setMobileTab("add-location")}
+          className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "add-location"
+            ? "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+            : "text-slate-400 hover:bg-slate-50"
+            }`}
+        >
+          <MapPin className="w-4 h-4 mb-1" />
+          <span className="text-center leading-none">New<br />Loc</span>
+        </button>
+        <button
+          onClick={() => setMobileTab("view-locations")}
+          className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "view-locations"
+            ? "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+            : "text-slate-400 hover:bg-slate-50"
+            }`}
+        >
+          <List className="w-4 h-4 mb-1" />
+          <span className="text-center leading-none">Saved<br />Locs</span>
+        </button>
+        <button
+          onClick={() => setMobileTab("add-route")}
+          className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "add-route"
+            ? "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+            : "text-slate-400 hover:bg-slate-50"
+            }`}
+        >
+          <Plus className="w-4 h-4 mb-1" />
+          <span className="text-center leading-none">New<br />Dist</span>
+        </button>
+        <button
+          onClick={() => setMobileTab("view-routes")}
+          className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "view-routes"
+            ? "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+            : "text-slate-400 hover:bg-slate-50"
+            }`}
+        >
+          <ArrowLeftRight className="w-4 h-4 mb-1" />
+          <span className="text-center leading-none">Saved<br />Dists</span>
+        </button>
+      </div>
+
       {/* SECTION 1: LOCATIONS */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1">
+      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 ${mobileTab.includes("location") ? "block" : "hidden md:grid"}`}>
+        <div className={`lg:col-span-1 ${mobileTab === "add-location" ? "block" : "hidden md:block"}`}>
           <Card className="p-6 sticky top-6">
             <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
               <MapPin className="w-5 h-5 text-indigo-600" />
@@ -1412,7 +1527,7 @@ const LocationsView = ({
             </form>
           </Card>
         </div>
-        <div className="lg:col-span-2">
+        <div className={`lg:col-span-2 ${mobileTab === "view-locations" ? "block" : "hidden md:block"}`}>
           <Card>
             <div className="bg-indigo-900 text-white px-6 py-4 flex justify-between items-center">
               <h3 className="font-bold">Saved Locations</h3>
@@ -1445,7 +1560,7 @@ const LocationsView = ({
                     </div>
                     <button
                       onClick={() => onDeleteLocation(loc.id)}
-                      className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-2"
+                      className="opacity-100 md:opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-2"
                     >
                       <Trash2 className="w-5 h-5" />
                     </button>
@@ -1458,13 +1573,13 @@ const LocationsView = ({
       </div>
 
       {/* SECTION 2: ROUTES */}
-      <div className="border-t border-slate-200 pt-8">
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+      <div className={`border-t border-slate-200 pt-8 ${mobileTab.includes("route") ? "block" : "hidden md:block"}`}>
+        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2 hidden md:flex">
           <Route className="w-6 h-6 text-indigo-600" />
           Manage Saved Distances
         </h2>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1">
+          <div className={`lg:col-span-1 ${mobileTab === "add-route" ? "block" : "hidden md:block"}`}>
             <Card
               className={`p-6 bg-slate-50 border ${editingRouteId ? "border-orange-300 ring-4 ring-orange-50" : "border-indigo-100"}`}
             >
@@ -1507,26 +1622,26 @@ const LocationsView = ({
               </form>
             </Card>
           </div>
-          <div className="lg:col-span-2">
+          <div className={`lg:col-span-2 ${mobileTab === "view-routes" ? "block" : "hidden md:block"}`}>
             <Card>
               <div className="bg-slate-100 px-6 py-3 border-b border-slate-200">
                 <h3 className="font-bold text-slate-600 text-sm uppercase">Your Saved Routes</h3>
               </div>
-              <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
-                {savedRoutes.length === 0 ? (
+              <div className="divide-y divide-slate-100 min-h-[calc(100vh-250px)] md:min-h-0 md:max-h-[500px] md:overflow-y-auto">
+                {sortedRoutes.length === 0 ? (
                   <div className="p-8 text-center text-slate-400 text-sm">
                     No saved routes. Add distances (e.g., Office to Home) to auto-fill your trips.
                   </div>
                 ) : (
-                  savedRoutes.map((route) => (
+                  sortedRoutes.map((route) => (
                     <div
                       key={route.id}
                       className={`p-3 flex items-center justify-between group transition-colors ${editingRouteId === route.id ? "bg-orange-50" : "hover:bg-slate-50"}`}
                     >
                       <div className="flex items-center gap-3">
-                        <span className="font-bold text-slate-700">{route.from}</span>
+                        <span className="font-bold text-slate-700">{route.displayFrom}</span>
                         <ArrowLeftRight className="w-4 h-4 text-slate-300" />
-                        <span className="font-bold text-slate-700">{route.to}</span>
+                        <span className="font-bold text-slate-700">{route.displayTo}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded mr-2">
