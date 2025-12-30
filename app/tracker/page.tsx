@@ -440,15 +440,43 @@ export default function MileageTrackerPage() {
 
   const handleDeleteEntry = async (id: string) => {
     console.log("[v0] handleDeleteEntry called with id:", id)
+    
+    // Show confirmation dialog
+    const confirmed = window.confirm("Are you sure you want to delete this trip entry? This action cannot be undone.")
+    if (!confirmed) {
+      return
+    }
+    
     try {
+      // Optimistically update the UI immediately
+      setEntries((prev) => prev.filter((entry) => entry.id !== id))
+      
       const { data, error } = await supabase.from("entries").delete().eq("id", id)
       console.log("[v0] Delete result - data:", data, "error:", error)
       if (error) {
         console.error("[v0] Delete error:", error)
+        // Revert the optimistic update on error
+        const { data: freshEntries } = await supabase
+          .from("entries")
+          .select("*")
+          .order("date", { ascending: false })
+          .order("createdat", { ascending: false })
+        if (freshEntries) {
+          setEntries(freshEntries)
+        }
         alert(`Failed to delete entry: ${error.message}`)
       }
     } catch (err) {
       console.error("[v0] Delete exception:", err)
+      // Revert the optimistic update on error
+      const { data: freshEntries } = await supabase
+        .from("entries")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("createdat", { ascending: false })
+      if (freshEntries) {
+        setEntries(freshEntries)
+      }
       alert("Failed to delete entry. Please try again.")
     }
   }
