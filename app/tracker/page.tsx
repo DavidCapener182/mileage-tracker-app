@@ -481,6 +481,58 @@ export default function MileageTrackerPage() {
     }
   }
 
+  const handleDeleteAllEntries = async () => {
+    console.log("[v0] handleDeleteAllEntries called")
+    
+    if (!user) {
+      alert("You must be logged in to delete entries.")
+      return
+    }
+    
+    // Show confirmation dialog with warning
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ALL ${entries.length} trip entries? This action cannot be undone and will clear all your trip data.`
+    )
+    if (!confirmed) {
+      return
+    }
+    
+    try {
+      // Optimistically update the UI immediately
+      setEntries([])
+      
+      const { error } = await supabase.from("entries").delete().eq("userid", user.id)
+      console.log("[v0] Delete all result - error:", error)
+      if (error) {
+        console.error("[v0] Delete all error:", error)
+        // Revert the optimistic update on error
+        const { data: freshEntries } = await supabase
+          .from("entries")
+          .select("*")
+          .order("date", { ascending: false })
+          .order("createdat", { ascending: false })
+        if (freshEntries) {
+          setEntries(freshEntries)
+        }
+        alert(`Failed to delete all entries: ${error.message}`)
+      } else {
+        console.log("[v0] Successfully deleted all entries")
+      }
+    } catch (err) {
+      console.error("[v0] Delete all exception:", err)
+      // Revert the optimistic update on error
+      const { data: freshEntries } = await supabase
+        .from("entries")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("createdat", { ascending: false })
+      if (freshEntries) {
+        setEntries(freshEntries)
+      }
+      alert("Failed to delete all entries. Please try again.")
+    }
+  }
+
   const handleRefreshEntries = async () => {
     const { data } = await supabase
       .from("entries")
@@ -615,6 +667,7 @@ export default function MileageTrackerPage() {
             onAddEntry={handleAddEntry}
             onUpdateEntry={handleUpdateEntry}
             onDeleteEntry={handleDeleteEntry}
+            onDeleteAll={handleDeleteAllEntries}
             onExport={exportToCSV}
             onRefresh={handleRefreshEntries}
           />
@@ -713,6 +766,7 @@ const TrackerView = ({
   onAddEntry,
   onUpdateEntry,
   onDeleteEntry,
+  onDeleteAll,
   onExport,
   onRefresh,
 }: {
@@ -723,6 +777,7 @@ const TrackerView = ({
   onAddEntry: (entry: Omit<Entry, "id" | "createdat">) => Promise<void> // Changed from created_at to createdat
   onUpdateEntry: (id: string, data: Partial<Entry>) => Promise<void>
   onDeleteEntry: (id: string) => Promise<void>
+  onDeleteAll: () => Promise<void>
   onExport: () => void
   onRefresh: () => Promise<void>
 }) => {
@@ -979,6 +1034,16 @@ const TrackerView = ({
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Export CSV</span>
           </Button>
+          {entries.length > 0 && (
+            <Button
+              variant="secondary"
+              onClick={onDeleteAll}
+              className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Delete All</span>
+            </Button>
+          )}
           <Button
             onClick={() => {
               resetForm()
