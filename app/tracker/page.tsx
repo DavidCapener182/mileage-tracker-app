@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import {
@@ -13,7 +13,6 @@ import {
   Trash2,
   Save,
   FileText,
-  DollarSign,
   Navigation,
   Cloud,
   Loader2,
@@ -26,6 +25,26 @@ import {
   List,
 } from "lucide-react"
 import { seedInitialData } from "@/app/actions/seed-data"
+import { toast } from "@/hooks/use-toast"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer"
 
 // --- Types ---
 interface Location {
@@ -64,9 +83,45 @@ interface Entry {
   createdat: string // Changed from created_at to match database column
 }
 
+interface QuickTripDraft {
+  trip: {
+    date: string
+    startPoint: string
+    stop1: string
+    stop2: string
+    stop3: string
+    stop4: string
+    finishPoint: string
+    clientsVisited: string
+    description: string
+  }
+  confidence: "high" | "medium" | "low"
+  unmatchedPlaces: string[]
+  distance: {
+    legs: Array<{
+      from: string
+      to: string
+      distance: string
+      source: "saved_route" | "google_maps" | "missing"
+    }>
+    missingLegs: string[]
+    totalMiles: string
+  }
+  metadata: {
+    usedGoogleMaps: boolean
+  }
+}
+
 // --- Constants ---
 const DEFAULT_CLAIM_RATE = "0.14"
 const DEFAULT_CHARGE_RATE = "0.25"
+const DEFAULT_CURRENCY = "GBP"
+
+const getTodayLocalDate = () => {
+  const now = new Date()
+  const timezoneOffset = now.getTimezoneOffset() * 60000
+  return new Date(now.getTime() - timezoneOffset).toISOString().slice(0, 10)
+}
 
 // --- UI Components ---
 const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
@@ -91,7 +146,7 @@ const Button = ({
   title?: string
 }) => {
   const baseStyle =
-    "px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center gap-2 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+    "px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center gap-2 justify-center min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed"
   const variants = {
     primary: "bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-100",
     secondary: "bg-white hover:bg-slate-50 text-slate-700 border border-slate-300",
@@ -206,7 +261,18 @@ export default function MileageTrackerPage() {
       }
     })
 
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(({ data: { user }, error }) => {
+      // Invalid/expired refresh token – sign out and force re-login
+      if (error) {
+        const isRefreshTokenError =
+          error.message?.includes("Refresh Token") ||
+          error.message?.includes("refresh_token") ||
+          error.message?.includes("invalid_refresh_token")
+        if (isRefreshTokenError) {
+          supabase.auth.signOut().finally(() => router.push("/auth/login"))
+          return
+        }
+      }
       if (!user) {
         router.push("/auth/login")
       } else {
@@ -231,10 +297,10 @@ export default function MileageTrackerPage() {
       console.log("[v0] Fetching initial data...")
 
       const [locationsRes, routesRes, entriesRes] = await Promise.all([
-        supabase.from("locations").select("*").order("name"),
-        supabase.from("saved_routes").select("*").order("from", { ascending: true }),
+        supabase.from("mt_locations").select("*").order("name"),
+        supabase.from("mt_saved_routes").select("*").order("from", { ascending: true }),
         supabase
-          .from("entries")
+          .from("mt_entries")
           .select("*")
           .order("date", { ascending: false })
           .order("createdat", { ascending: false }),
@@ -252,7 +318,7 @@ export default function MileageTrackerPage() {
 
     const channel = supabase
       .channel("db_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "locations" }, (payload) => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_locations" }, (payload) => {
         console.log("[v0] Location change:", payload.eventType, payload.new)
         if (payload.eventType === "INSERT") {
           setLocations((prev) => {
@@ -265,7 +331,7 @@ export default function MileageTrackerPage() {
           setLocations((prev) => prev.map((loc) => (loc.id === payload.new.id ? (payload.new as Location) : loc)))
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "saved_routes" }, (payload) => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_saved_routes" }, (payload) => {
         console.log("[v0] Route change:", payload.eventType, payload.new)
         if (payload.eventType === "INSERT") {
           setSavedRoutes((prev) => {
@@ -280,7 +346,7 @@ export default function MileageTrackerPage() {
           )
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "entries" }, (payload) => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_entries" }, (payload) => {
         console.log("[v0] Entry change:", payload.eventType, payload.new || payload.old)
         if (payload.eventType === "INSERT") {
           setEntries((prev) => {
@@ -309,17 +375,17 @@ export default function MileageTrackerPage() {
     if (!user || hasCheckedSeed || isLoading) return
 
     const checkAndSeed = async () => {
-      const { data, error } = await supabase.from("entries").select("id").limit(1)
+      const { data, error } = await supabase.from("mt_entries").select("id").limit(1)
 
       if (!data || data.length === 0) {
         const result = await seedInitialData()
         if (result.success) {
           // Refresh data after seeding
           const [locationsRes, routesRes, entriesRes] = await Promise.all([
-            supabase.from("locations").select("*").order("name"),
-            supabase.from("saved_routes").select("*").order("from", { ascending: true }),
+            supabase.from("mt_locations").select("*").order("name"),
+            supabase.from("mt_saved_routes").select("*").order("from", { ascending: true }),
             supabase
-              .from("entries")
+              .from("mt_entries")
               .select("*")
               .order("date", { ascending: false })
               .order("createdat", { ascending: false }),
@@ -342,7 +408,7 @@ export default function MileageTrackerPage() {
   ) => {
     if (!user) throw new Error("Not authenticated")
     const { data, error } = await supabase
-      .from("locations")
+      .from("mt_locations")
       .insert({ ...newLoc, userid: user.id })
       .select()
     if (error) throw error
@@ -352,7 +418,7 @@ export default function MileageTrackerPage() {
   }
 
   const handleDeleteLocation = async (id: string) => {
-    const { error } = await supabase.from("locations").delete().eq("id", id)
+    const { error } = await supabase.from("mt_locations").delete().eq("id", id)
     if (error) throw error
     setLocations((prev) => prev.filter((loc) => loc.id !== id))
   }
@@ -361,7 +427,7 @@ export default function MileageTrackerPage() {
   const handleAddRoute = async (newRoute: { from: string; to: string; distance: string }) => {
     if (!user) return
     const { data, error } = await supabase
-      .from("saved_routes")
+      .from("mt_saved_routes")
       .insert({ ...newRoute, userid: user.id })
       .select()
     if (error) throw error
@@ -373,7 +439,7 @@ export default function MileageTrackerPage() {
   // Updated handleUpdateRoute
   const handleUpdateRoute = async (id: string, updatedRoute: { from: string; to: string; distance: string }) => {
     const { data, error } = await supabase
-      .from("saved_routes")
+      .from("mt_saved_routes")
       .update({ ...updatedRoute, updatedat: new Date().toISOString() })
       .eq("id", id)
       .select()
@@ -386,7 +452,7 @@ export default function MileageTrackerPage() {
   }
 
   const handleDeleteRoute = async (id: string) => {
-    const { error } = await supabase.from("saved_routes").delete().eq("id", id)
+    const { error } = await supabase.from("mt_saved_routes").delete().eq("id", id)
     if (error) throw error
     setSavedRoutes((prev) => prev.filter((route) => route.id !== id))
   }
@@ -404,7 +470,7 @@ export default function MileageTrackerPage() {
     }
     console.log("[v0] Data to insert:", dataToInsert)
 
-    const { data, error } = await supabase.from("entries").insert([dataToInsert]).select()
+    const { data, error } = await supabase.from("mt_entries").insert([dataToInsert]).select()
 
     console.log("[v0] Insert result - data:", data, "error:", error)
 
@@ -417,7 +483,7 @@ export default function MileageTrackerPage() {
 
     if (data && data.length > 0) {
       const { data: freshEntries } = await supabase
-        .from("entries")
+        .from("mt_entries")
         .select("*")
         .order("date", { ascending: false })
         .order("createdat", { ascending: false })
@@ -432,7 +498,7 @@ export default function MileageTrackerPage() {
   // Updated handleUpdateEntry
   const handleUpdateEntry = async (id: string, updatedData: Partial<Entry>) => {
     const { error } = await supabase
-      .from("entries")
+      .from("mt_entries")
       .update({ ...updatedData, updatedat: new Date().toISOString() })
       .eq("id", id)
     if (error) throw error
@@ -440,102 +506,86 @@ export default function MileageTrackerPage() {
 
   const handleDeleteEntry = async (id: string) => {
     console.log("[v0] handleDeleteEntry called with id:", id)
-    
-    // Show confirmation dialog
-    const confirmed = window.confirm("Are you sure you want to delete this trip entry? This action cannot be undone.")
-    if (!confirmed) {
-      return
-    }
-    
+
     try {
       // Optimistically update the UI immediately
       setEntries((prev) => prev.filter((entry) => entry.id !== id))
-      
-      const { data, error } = await supabase.from("entries").delete().eq("id", id)
+
+      const { data, error } = await supabase.from("mt_entries").delete().eq("id", id)
       console.log("[v0] Delete result - data:", data, "error:", error)
       if (error) {
         console.error("[v0] Delete error:", error)
         // Revert the optimistic update on error
         const { data: freshEntries } = await supabase
-          .from("entries")
+          .from("mt_entries")
           .select("*")
           .order("date", { ascending: false })
           .order("createdat", { ascending: false })
         if (freshEntries) {
           setEntries(freshEntries)
         }
-        alert(`Failed to delete entry: ${error.message}`)
+        throw new Error(error.message)
       }
     } catch (err) {
       console.error("[v0] Delete exception:", err)
       // Revert the optimistic update on error
       const { data: freshEntries } = await supabase
-        .from("entries")
+        .from("mt_entries")
         .select("*")
         .order("date", { ascending: false })
         .order("createdat", { ascending: false })
       if (freshEntries) {
         setEntries(freshEntries)
       }
-      alert("Failed to delete entry. Please try again.")
+      throw new Error(err instanceof Error ? err.message : "Failed to delete entry. Please try again.")
     }
   }
 
   const handleDeleteAllEntries = async () => {
     console.log("[v0] handleDeleteAllEntries called")
-    
+
     if (!user) {
-      alert("You must be logged in to delete entries.")
-      return
+      throw new Error("You must be logged in to delete entries.")
     }
-    
-    // Show confirmation dialog with warning
-    const confirmed = window.confirm(
-      `Are you sure you want to delete ALL ${entries.length} trip entries? This action cannot be undone and will clear all your trip data.`
-    )
-    if (!confirmed) {
-      return
-    }
-    
+
     try {
       // Optimistically update the UI immediately
       setEntries([])
-      
-      const { error } = await supabase.from("entries").delete().eq("userid", user.id)
+
+      const { error } = await supabase.from("mt_entries").delete().eq("userid", user.id)
       console.log("[v0] Delete all result - error:", error)
       if (error) {
         console.error("[v0] Delete all error:", error)
         // Revert the optimistic update on error
         const { data: freshEntries } = await supabase
-          .from("entries")
+          .from("mt_entries")
           .select("*")
           .order("date", { ascending: false })
           .order("createdat", { ascending: false })
         if (freshEntries) {
           setEntries(freshEntries)
         }
-        alert(`Failed to delete all entries: ${error.message}`)
-      } else {
-        console.log("[v0] Successfully deleted all entries")
+        throw new Error(error.message)
       }
+      console.log("[v0] Successfully deleted all entries")
     } catch (err) {
       console.error("[v0] Delete all exception:", err)
       // Revert the optimistic update on error
       const { data: freshEntries } = await supabase
-        .from("entries")
+        .from("mt_entries")
         .select("*")
         .order("date", { ascending: false })
         .order("createdat", { ascending: false })
       if (freshEntries) {
         setEntries(freshEntries)
       }
-      alert("Failed to delete all entries. Please try again.")
+      throw new Error(err instanceof Error ? err.message : "Failed to delete all entries. Please try again.")
     }
   }
 
   const handleRefreshEntries = async () => {
     const { data } = await supabase
-      .from("entries")
+      .from("mt_entries")
       .select("*")
       .order("date", { ascending: false })
       .order("createdat", { ascending: false })
@@ -588,11 +638,15 @@ export default function MileageTrackerPage() {
     const link = document.createElement("a")
     const url = URL.createObjectURL(blob)
     link.setAttribute("href", url)
-    link.setAttribute("download", `mileage_tracker_export_${new Date().toISOString().slice(0, 10)}.csv`)
+    link.setAttribute("download", `mileage_tracker_export_${getTodayLocalDate()}.csv`)
     link.style.visibility = "hidden"
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+    toast({
+      title: "Export ready",
+      description: "Your mileage CSV has been downloaded.",
+    })
   }
 
   const handleSignOut = async () => {
@@ -627,32 +681,36 @@ export default function MileageTrackerPage() {
               </div>
             </div>
 
-            <div className="flex gap-2 items-center">
-              <button
-                onClick={() => setActiveTab("tracker")}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === "tracker" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
-              >
-                My Trips
-              </button>
-              <button
-                onClick={() => setActiveTab("locations")}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === "locations" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
-              >
-                Locations & Routes
-              </button>
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+                <button
+                  onClick={() => setActiveTab("tracker")}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "tracker" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
+                >
+                  My Trips
+                </button>
+                <button
+                  onClick={() => setActiveTab("locations")}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "locations" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
+                >
+                  <span className="sm:hidden">Locations</span>
+                  <span className="hidden sm:inline">Locations & Routes</span>
+                </button>
+              </div>
               <button
                 onClick={handleSignOut}
-                className="ml-4 px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-white/10 transition-colors flex items-center gap-2"
+                className="ml-auto sm:ml-2 px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-white/10 transition-colors flex items-center gap-2 min-h-[44px]"
+                aria-label="Sign out"
               >
                 <LogOut className="w-4 h-4" />
-                Sign out
+                <span className="hidden sm:inline">Sign out</span>
               </button>
             </div>
           </div>
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-6 pb-safe">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 text-slate-400">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
@@ -670,6 +728,7 @@ export default function MileageTrackerPage() {
             onDeleteAll={handleDeleteAllEntries}
             onExport={exportToCSV}
             onRefresh={handleRefreshEntries}
+            onOpenLocationsTab={() => setActiveTab("locations")}
           />
         ) : (
           <LocationsView
@@ -692,71 +751,6 @@ export default function MileageTrackerPage() {
   )
 }
 
-// --- Editable Comment Component ---
-const EditableComment = ({
-  id,
-  initialValue,
-  onSave,
-}: {
-  id: string
-  initialValue: string
-  onSave: (id: string, value: string) => Promise<void>
-}) => {
-  const [value, setValue] = useState(initialValue)
-  const [isSaving, setIsSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle")
-
-  // Sync with external changes (e.g. realtime updates)
-  useEffect(() => {
-    setValue(initialValue)
-  }, [initialValue])
-
-  const handleSave = async () => {
-    if (value !== initialValue) {
-      setIsSaving(true)
-      setSaveStatus("idle")
-      try {
-        await onSave(id, value)
-        setSaveStatus("success")
-        setTimeout(() => setSaveStatus("idle"), 2000)
-      } catch (error) {
-        console.error("Failed to save comment", error)
-        setSaveStatus("error")
-        alert("Failed to save comment. Please try again.")
-      } finally {
-        setIsSaving(false)
-      }
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.currentTarget.blur()
-    }
-  }
-
-  return (
-    <div className="relative group">
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={handleSave}
-        onKeyDown={handleKeyDown}
-        className={`w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-none italic transition-colors px-1 py-0.5 ${saveStatus === "error" ? "text-red-500" : "text-slate-500"
-          }`}
-      />
-      <div className="absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none">
-        {isSaving ? (
-          <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
-        ) : saveStatus === "success" ? (
-          <div className="w-2 h-2 rounded-full bg-emerald-500" title="Saved" />
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
 // --- Tracker View ---
 const TrackerView = ({
   user,
@@ -769,6 +763,7 @@ const TrackerView = ({
   onDeleteAll,
   onExport,
   onRefresh,
+  onOpenLocationsTab,
 }: {
   user: { id: string } | null
   locations: Location[]
@@ -780,13 +775,48 @@ const TrackerView = ({
   onDeleteAll: () => Promise<void>
   onExport: () => void
   onRefresh: () => Promise<void>
+  onOpenLocationsTab: () => void
 }) => {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [entryIdToDelete, setEntryIdToDelete] = useState<string | null>(null)
+  const [isDeleteAllOpen, setIsDeleteAllOpen] = useState(false)
+  const [isDeletingEntry, setIsDeletingEntry] = useState(false)
+  const [isDeletingAll, setIsDeletingAll] = useState(false)
+  const [assistantMode, setAssistantMode] = useState<"freeform" | "guided">("freeform")
+  const [quickAddText, setQuickAddText] = useState("")
+  const [guidedStart, setGuidedStart] = useState("")
+  const [guidedStops, setGuidedStops] = useState("")
+  const [guidedFinish, setGuidedFinish] = useState("")
+  const [guidedPurpose, setGuidedPurpose] = useState("")
+  const [isParsingQuickAdd, setIsParsingQuickAdd] = useState(false)
+  const [quickDraft, setQuickDraft] = useState<QuickTripDraft | null>(null)
+  const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
+  const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
+  const previousEntryIdsRef = useRef<Set<string>>(new Set())
+  const locale = useMemo(() => (typeof navigator !== "undefined" ? navigator.language : "en-GB"), [])
+  const dateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }),
+    [locale],
+  )
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(locale, {
+        style: "currency",
+        currency: DEFAULT_CURRENCY,
+        maximumFractionDigits: 2,
+      }),
+    [locale],
+  )
 
   const [formData, setFormData] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: getTodayLocalDate(),
     startPoint: "",
     stop1: "",
     stop2: "",
@@ -798,14 +828,13 @@ const TrackerView = ({
     totalMiles: "",
     claimRate: DEFAULT_CLAIM_RATE,
     chargeRate: DEFAULT_CHARGE_RATE,
-    comments: "",
   })
 
   const [legDistances, setLegDistances] = useState<Record<string, string>>({})
 
   const resetForm = () => {
     setFormData({
-      date: new Date().toISOString().slice(0, 10),
+      date: getTodayLocalDate(),
       startPoint: "",
       stop1: "",
       stop2: "",
@@ -817,7 +846,6 @@ const TrackerView = ({
       totalMiles: "",
       claimRate: DEFAULT_CLAIM_RATE,
       chargeRate: DEFAULT_CHARGE_RATE,
-      comments: "",
     })
     setLegDistances({})
     setEditingId(null)
@@ -825,6 +853,7 @@ const TrackerView = ({
   }
 
   const handleEditClick = (entry: Entry) => {
+    setMobileDetailsEntryId(null)
     setFormData({
       date: entry.date,
       startPoint: entry.startPoint,
@@ -838,7 +867,6 @@ const TrackerView = ({
       totalMiles: entry.totalMiles,
       claimRate: entry.claimRate || DEFAULT_CLAIM_RATE,
       chargeRate: entry.chargeRate || DEFAULT_CHARGE_RATE,
-      comments: entry.comments || "",
     })
     setEditingId(entry.id)
     setIsFormOpen(true)
@@ -932,6 +960,76 @@ const TrackerView = ({
   const totalCharge = (
     Number.parseFloat(formData.totalMiles || "0") * Number.parseFloat(formData.chargeRate || "0")
   ).toFixed(2)
+  const formatDate = (value: string) => {
+    const parsed = new Date(`${value}T00:00:00`)
+    if (Number.isNaN(parsed.getTime())) {
+      return value
+    }
+    return dateFormatter.format(parsed)
+  }
+  const formatCurrency = (value: number | string) => {
+    const parsed = typeof value === "number" ? value : Number.parseFloat(value || "0")
+    return currencyFormatter.format(Number.isNaN(parsed) ? 0 : parsed)
+  }
+  const mobileDetailsEntry = useMemo(
+    () => entries.find((entry) => entry.id === mobileDetailsEntryId) || null,
+    [entries, mobileDetailsEntryId],
+  )
+  const totals = useMemo(
+    () =>
+      entries.reduce(
+        (acc, curr) => {
+          acc.miles += Number.parseFloat(curr.totalMiles) || 0
+          acc.claim += Number.parseFloat(curr.totalClaim) || 0
+          acc.charge += Number.parseFloat(curr.totalCharge) || 0
+          return acc
+        },
+        { miles: 0, claim: 0, charge: 0 },
+      ),
+    [entries],
+  )
+
+  useEffect(() => {
+    const currentIds = new Set(entries.map((entry) => entry.id))
+
+    if (previousEntryIdsRef.current.size === 0) {
+      previousEntryIdsRef.current = currentIds
+      return
+    }
+
+    const insertedIds = Array.from(currentIds).filter((id) => !previousEntryIdsRef.current.has(id))
+    if (insertedIds.length === 0) {
+      previousEntryIdsRef.current = currentIds
+      return
+    }
+
+    setNewlyAddedEntryIds((prev) => {
+      const next = { ...prev }
+      insertedIds.forEach((id) => {
+        next[id] = true
+      })
+      return next
+    })
+
+    const timeout = setTimeout(() => {
+      setNewlyAddedEntryIds((prev) => {
+        const next = { ...prev }
+        insertedIds.forEach((id) => {
+          delete next[id]
+        })
+        return next
+      })
+    }, 2200)
+
+    previousEntryIdsRef.current = currentIds
+    return () => clearTimeout(timeout)
+  }, [entries])
+
+  useEffect(() => {
+    if (mobileDetailsEntryId && !entries.some((entry) => entry.id === mobileDetailsEntryId)) {
+      setMobileDetailsEntryId(null)
+    }
+  }, [entries, mobileDetailsEntryId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -941,13 +1039,21 @@ const TrackerView = ({
     console.log("[v0] Total Claim:", totalClaim, "Total Charge:", totalCharge)
 
     if (!user) {
-      console.log("[v0] No user - showing alert")
-      alert("You are not connected to the database. Please wait for the 'Cloud Connected' status in the top right.")
+      console.log("[v0] No user - showing toast")
+      toast({
+        title: "Still connecting",
+        description: "Wait for Cloud Connected in the header, then try again.",
+        variant: "destructive",
+      })
       return
     }
 
     if (!formData.startPoint || !formData.finishPoint || !formData.date || !formData.totalMiles) {
-      alert("Please fill in all required fields: Date, Starting Point, Finish Point, and Total Miles")
+      toast({
+        title: "Missing required fields",
+        description: "Date, starting point, finish point, and total miles are required.",
+        variant: "destructive",
+      })
       return
     }
 
@@ -968,58 +1074,424 @@ const TrackerView = ({
 
       console.log("[v0] Save successful, resetting form")
       resetForm()
+      toast({
+        title: editingId ? "Trip updated" : "Trip saved",
+        description: "Your mileage entry is now in your recent trips list.",
+      })
       console.log("[v0] ========== FORM SUBMIT SUCCESS ==========")
     } catch (err: any) {
       console.error("[v0] ========== FORM SUBMIT ERROR ==========")
       console.error("[v0] Error object:", err)
       console.error("[v0] Error message:", err.message)
       console.error("[v0] Error stack:", err.stack)
-      alert(`Failed to save trip: ${err.message}. Please check the console for details.`)
+      toast({
+        title: "Could not save trip",
+        description: err.message || "Please check your connection and try again.",
+        variant: "destructive",
+      })
     } finally {
       setIsSaving(false)
+    }
+  }
+  const openTripForm = () => {
+    if (locations.length < 2) {
+      toast({
+        title: "Add locations first",
+        description: "Create at least two saved locations before adding a trip.",
+        variant: "destructive",
+      })
+      return
+    }
+    resetForm()
+    setIsFormOpen((prev) => !prev)
+  }
+  const confirmDeleteEntry = async () => {
+    if (!entryIdToDelete) return
+    setIsDeletingEntry(true)
+    try {
+      await onDeleteEntry(entryIdToDelete)
+      toast({
+        title: "Trip deleted",
+        description: "The selected trip has been removed.",
+      })
+      setEntryIdToDelete(null)
+    } catch (error) {
+      toast({
+        title: "Could not delete trip",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDeletingEntry(false)
+    }
+  }
+  const confirmDeleteAllEntries = async () => {
+    setIsDeletingAll(true)
+    try {
+      await onDeleteAll()
+      toast({
+        title: "All trips deleted",
+        description: "Your entries list has been cleared.",
+      })
+      setIsDeleteAllOpen(false)
+    } catch (error) {
+      toast({
+        title: "Could not delete all trips",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDeletingAll(false)
+    }
+  }
+
+  const buildGuidedNote = () => {
+    const stopsText = guidedStops
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join(", ")
+    const visitPart = stopsText ? `visited ${stopsText}` : "made no intermediate stops"
+    const purposePart = guidedPurpose.trim() ? ` for ${guidedPurpose.trim()}` : ""
+    return `Today I left ${guidedStart || "[start]"}, ${visitPart}, and finished at ${guidedFinish || "[finish]"}${purposePart}.`
+  }
+
+  const parseQuickAdd = async (sourceText?: string) => {
+    const textToParse = (sourceText || quickAddText).trim()
+    if (!textToParse) {
+      toast({
+        title: "Add a trip note first",
+        description: "Type a free-text trip note or use guided prompts.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (locations.length === 0) {
+      toast({
+        title: "No locations available",
+        description: "Add saved locations before using AI Quick Add.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsParsingQuickAdd(true)
+    try {
+      const response = await fetch("/api/ai/quick-trip", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: textToParse,
+          today: getTodayLocalDate(),
+          locations,
+          savedRoutes,
+        }),
+      })
+
+      const data = (await response.json()) as QuickTripDraft | { error?: string }
+      if (!response.ok || "error" in data) {
+        throw new Error(("error" in data && data.error) || "Could not parse trip note")
+      }
+
+      setQuickDraft(data)
+      toast({
+        title: "Draft parsed",
+        description: "Review details, then add it to the table or open it in the form.",
+      })
+    } catch (error) {
+      toast({
+        title: "AI parse failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsParsingQuickAdd(false)
+    }
+  }
+
+  const mapLegDistancesToFormIds = (trip: QuickTripDraft["trip"], draftLegs: QuickTripDraft["distance"]["legs"]) => {
+    const route: Array<{ fieldId: string; name: string }> = []
+    if (trip.startPoint) route.push({ fieldId: "start", name: trip.startPoint })
+    if (trip.stop1) route.push({ fieldId: "stop1", name: trip.stop1 })
+    if (trip.stop2) route.push({ fieldId: "stop2", name: trip.stop2 })
+    if (trip.stop3) route.push({ fieldId: "stop3", name: trip.stop3 })
+    if (trip.stop4) route.push({ fieldId: "stop4", name: trip.stop4 })
+    if (trip.finishPoint) route.push({ fieldId: "finish", name: trip.finishPoint })
+
+    const result: Record<string, string> = {}
+
+    for (let i = 0; i < route.length - 1; i += 1) {
+      const from = route[i].name
+      const to = route[i + 1].name
+      const leg = draftLegs.find(
+        (item) => (item.from === from && item.to === to) || (item.from === to && item.to === from),
+      )
+      if (leg?.distance) {
+        result[`${route[i].fieldId}-${route[i + 1].fieldId}`] = leg.distance
+      }
+    }
+
+    return result
+  }
+
+  const applyQuickDraftToForm = () => {
+    if (!quickDraft) return
+    const trip = quickDraft.trip
+
+    setFormData({
+      date: trip.date || getTodayLocalDate(),
+      startPoint: trip.startPoint || "",
+      stop1: trip.stop1 || "",
+      stop2: trip.stop2 || "",
+      stop3: trip.stop3 || "",
+      stop4: trip.stop4 || "",
+      finishPoint: trip.finishPoint || "",
+      clientsVisited: trip.clientsVisited || "",
+      description: trip.description || "",
+      totalMiles: quickDraft.distance.totalMiles || "",
+      claimRate: DEFAULT_CLAIM_RATE,
+      chargeRate: DEFAULT_CHARGE_RATE,
+    })
+    setLegDistances(mapLegDistancesToFormIds(trip, quickDraft.distance.legs))
+    setEditingId(null)
+    setIsFormOpen(true)
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  const addQuickDraftToTable = async () => {
+    if (!quickDraft) return
+    const trip = quickDraft.trip
+    const totalMiles = quickDraft.distance.totalMiles || ""
+
+    if (!trip.startPoint || !trip.finishPoint || !trip.date || !totalMiles) {
+      toast({
+        title: "Draft needs review",
+        description: "Open in form to complete missing fields or distance.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const claimRate = DEFAULT_CLAIM_RATE
+    const chargeRate = DEFAULT_CHARGE_RATE
+    const totalClaim = (Number.parseFloat(totalMiles) * Number.parseFloat(claimRate)).toFixed(2)
+    const totalCharge = (Number.parseFloat(totalMiles) * Number.parseFloat(chargeRate)).toFixed(2)
+
+    try {
+      await onAddEntry({
+        date: trip.date,
+        startPoint: trip.startPoint,
+        stop1: trip.stop1 || "",
+        stop2: trip.stop2 || "",
+        stop3: trip.stop3 || "",
+        stop4: trip.stop4 || "",
+        finishPoint: trip.finishPoint,
+        clientsVisited: trip.clientsVisited || "",
+        description: trip.description || "",
+        totalMiles,
+        claimRate,
+        chargeRate,
+        totalClaim,
+        totalCharge,
+      })
+      setQuickDraft(null)
+      setQuickAddText("")
+      toast({
+        title: "Trip added",
+        description: "AI draft was added directly to your entries.",
+      })
+    } catch (error) {
+      toast({
+        title: "Could not add trip",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      })
     }
   }
 
   const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24 md:pb-0">
       {/* Stats Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
         <Card className="p-4 flex items-center justify-between bg-white">
           <div>
             <p className="text-slate-500 text-sm font-medium">Total Miles</p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-800">
-              {entries.reduce((acc, curr) => acc + (Number.parseFloat(curr.totalMiles) || 0), 0).toFixed(1)}
-            </p>
+            <p className="text-2xl sm:text-3xl font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
           </div>
           <Navigation className="w-8 h-8 text-indigo-500 opacity-20" />
         </Card>
         <Card className="p-4 flex items-center justify-between bg-white border-emerald-200 border-l-4">
           <div>
             <p className="text-emerald-700 text-sm font-medium">Total Claimable</p>
-            <p className="text-2xl sm:text-3xl font-bold text-emerald-600">
-              £{entries.reduce((acc, curr) => acc + (Number.parseFloat(curr.totalClaim) || 0), 0).toFixed(2)}
-            </p>
+            <p className="text-2xl sm:text-3xl font-bold text-emerald-600">{formatCurrency(totals.claim)}</p>
           </div>
           <PoundSterling className="w-8 h-8 text-emerald-500 opacity-20" />
         </Card>
         <Card className="p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
           <div>
             <p className="text-blue-700 text-sm font-medium">Total Chargeable</p>
-            <p className="text-2xl sm:text-3xl font-bold text-blue-600">
-              £{entries.reduce((acc, curr) => acc + (Number.parseFloat(curr.totalCharge) || 0), 0).toFixed(2)}
-            </p>
+            <p className="text-2xl sm:text-3xl font-bold text-blue-600">{formatCurrency(totals.charge)}</p>
           </div>
           <FileText className="w-8 h-8 text-blue-500 opacity-20" />
         </Card>
       </div>
 
+      <Card className="p-4 md:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">AI Trip Assistant</p>
+            <p className="text-xs text-slate-500">
+              Describe a trip in plain English, or use guided prompts. AI will prepare a draft.
+            </p>
+          </div>
+          <div className="flex rounded-lg border border-slate-200 p-1">
+            <button
+              type="button"
+              onClick={() => setAssistantMode("freeform")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "freeform" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+            >
+              Free Text
+            </button>
+            <button
+              type="button"
+              onClick={() => setAssistantMode("guided")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "guided" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+            >
+              Guided
+            </button>
+          </div>
+        </div>
+
+        {assistantMode === "freeform" ? (
+          <div className="mt-4 space-y-3">
+            <textarea
+              value={quickAddText}
+              onChange={(e) => setQuickAddText(e.target.value)}
+              rows={4}
+              placeholder='Example: "Today I left Home, visited Client A then Client B, then back to Office for H&S audit."'
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => void parseQuickAdd()} disabled={isParsingQuickAdd}>
+                {isParsingQuickAdd ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {isParsingQuickAdd ? "Parsing..." : "Parse With AI"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Select
+              label="Start"
+              options={locationOptions}
+              value={guidedStart}
+              onChange={(e) => setGuidedStart(e.target.value)}
+            />
+            <Select
+              label="Finish"
+              options={locationOptions}
+              value={guidedFinish}
+              onChange={(e) => setGuidedFinish(e.target.value)}
+            />
+            <Input
+              label="Stops (comma separated)"
+              value={guidedStops}
+              placeholder="Client A, Client B"
+              onChange={(e) => setGuidedStops(e.target.value)}
+              className="md:col-span-2"
+            />
+            <Input
+              label="Purpose"
+              value={guidedPurpose}
+              placeholder="H&S audits"
+              onChange={(e) => setGuidedPurpose(e.target.value)}
+              className="md:col-span-2"
+            />
+            <div className="md:col-span-2 flex flex-wrap gap-2">
+              <Button
+                onClick={() => {
+                  const note = buildGuidedNote()
+                  setQuickAddText(note)
+                  void parseQuickAdd(note)
+                }}
+                disabled={isParsingQuickAdd}
+              >
+                {isParsingQuickAdd ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {isParsingQuickAdd ? "Parsing..." : "Build Draft"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {quickDraft && (
+          <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full bg-white px-2 py-1 font-semibold text-slate-700 border border-slate-200">
+                Confidence: {quickDraft.confidence}
+              </span>
+              {quickDraft.metadata.usedGoogleMaps && (
+                <span className="rounded-full bg-white px-2 py-1 font-semibold text-slate-700 border border-slate-200">
+                  Google Maps enabled
+                </span>
+              )}
+              {quickDraft.unmatchedPlaces.length > 0 && (
+                <span className="rounded-full bg-amber-50 text-amber-700 px-2 py-1 font-semibold border border-amber-200">
+                  Unmatched: {quickDraft.unmatchedPlaces.join(", ")}
+                </span>
+              )}
+            </div>
+
+            <div className="text-sm text-slate-700">
+              <span className="font-semibold">{formatDate(quickDraft.trip.date)}</span>
+              <span className="mx-2 text-slate-400">|</span>
+              <span>{quickDraft.trip.startPoint || "?"}</span>
+              {[quickDraft.trip.stop1, quickDraft.trip.stop2, quickDraft.trip.stop3, quickDraft.trip.stop4]
+                .filter(Boolean)
+                .map((stop, index) => (
+                  <span key={`draft-stop-${index}`} className="mx-1">
+                    {"->"} {stop}
+                  </span>
+                ))}
+              <span className="mx-1">{"->"} {quickDraft.trip.finishPoint || "?"}</span>
+            </div>
+
+            <div className="text-xs text-slate-600">
+              Total Miles: <span className="font-semibold">{quickDraft.distance.totalMiles || "Not calculated"}</span>
+              {quickDraft.distance.missingLegs.length > 0 && (
+                <span className="ml-2 text-amber-700">
+                  Missing: {quickDraft.distance.missingLegs.join(", ")}
+                </span>
+              )}
+            </div>
+
+            {quickDraft.trip.description && (
+              <p className="text-sm text-slate-700">
+                <span className="font-semibold">Description:</span> {quickDraft.trip.description}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={applyQuickDraftToForm}>
+                Review In Form
+              </Button>
+              <Button onClick={() => void addQuickDraftToTable()}>Add To Table</Button>
+              <Button variant="secondary" onClick={() => setQuickDraft(null)}>
+                Dismiss Draft
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {/* Action Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <h2 className="text-lg font-bold text-slate-800">Recent Entries</h2>
-        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <Button variant="secondary" onClick={onRefresh}>
+        <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:flex-wrap sm:w-auto">
+          <Button variant="secondary" onClick={onRefresh} className="w-full sm:w-auto">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
                 strokeLinecap="round"
@@ -1030,29 +1502,37 @@ const TrackerView = ({
             </svg>
             Refresh
           </Button>
-          <Button variant="secondary" onClick={onExport}>
+          <Button variant="secondary" onClick={onExport} className="hidden md:flex w-full sm:w-auto">
             <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Export CSV</span>
+            Export CSV
           </Button>
           {entries.length > 0 && (
             <Button
               variant="secondary"
-              onClick={onDeleteAll}
-              className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+              onClick={() => setIsDeleteAllOpen(true)}
+              className="w-full sm:w-auto text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
             >
               <Trash2 className="w-4 h-4" />
               <span className="hidden sm:inline">Delete All</span>
+              <span className="sm:hidden">Delete</span>
             </Button>
           )}
-          <Button
-            onClick={() => {
-              resetForm()
-              setIsFormOpen(!isFormOpen)
-            }}
-            disabled={!user}
-          >
+          <Button onClick={openTripForm} disabled={!user} className="hidden md:flex w-full sm:w-auto">
             <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Add New Trip</span>
+            Add New Trip
+          </Button>
+        </div>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur md:hidden pb-safe">
+        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-2 px-4 py-3">
+          <Button variant="secondary" onClick={onExport} className="w-full">
+            <Download className="w-4 h-4" />
+            Export
+          </Button>
+          <Button onClick={openTripForm} disabled={!user} className="w-full">
+            <Plus className="w-4 h-4" />
+            New Trip
           </Button>
         </div>
       </div>
@@ -1173,18 +1653,12 @@ const TrackerView = ({
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <Input
                 label="Description"
                 placeholder="Meeting purpose etc."
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              />
-              <Input
-                label="Comments"
-                placeholder="Traffic notes, parking etc."
-                value={formData.comments}
-                onChange={(e) => setFormData({ ...formData, comments: e.target.value })}
               />
             </div>
 
@@ -1206,25 +1680,25 @@ const TrackerView = ({
               <div className="md:col-span-2">
                 <Input
                   type="number"
-                  label="Claim Rate (£)"
+                  label={`Claim Rate (${DEFAULT_CURRENCY})`}
                   value={formData.claimRate}
                   onChange={(e) => setFormData({ ...formData, claimRate: e.target.value })}
                 />
               </div>
               <div className="md:col-span-2 pb-2">
-                <div className="text-xl font-bold text-emerald-600">£{totalClaim}</div>
+                <div className="text-xl font-bold text-emerald-600">{formatCurrency(totalClaim)}</div>
                 <div className="text-[10px] text-emerald-700 uppercase font-bold">Claimable</div>
               </div>
               <div className="md:col-span-2">
                 <Input
                   type="number"
-                  label="Charge Rate (£)"
+                  label={`Charge Rate (${DEFAULT_CURRENCY})`}
                   value={formData.chargeRate}
                   onChange={(e) => setFormData({ ...formData, chargeRate: e.target.value })}
                 />
               </div>
               <div className="md:col-span-2 pb-2">
-                <div className="text-xl font-bold text-blue-600">£{totalCharge}</div>
+                <div className="text-xl font-bold text-blue-600">{formatCurrency(totalCharge)}</div>
                 <div className="text-[10px] text-blue-700 uppercase font-bold">Chargeable</div>
               </div>
             </div>
@@ -1242,31 +1716,51 @@ const TrackerView = ({
       {/* Data Table */}
       <Card className="overflow-hidden">
         {/* Desktop Table View */}
-        <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-sm text-left">
+        <div className="hidden md:block overflow-x-auto overscroll-x-contain">
+          <table className="w-full min-w-[920px] text-sm text-left">
             <thead className="bg-indigo-900 text-white uppercase text-xs font-semibold">
               <tr>
                 <th className="px-4 py-3 whitespace-nowrap">Date</th>
                 <th className="px-4 py-3 whitespace-nowrap">Route</th>
                 <th className="px-4 py-3 whitespace-nowrap">Clients</th>
                 <th className="px-4 py-3 whitespace-nowrap text-right">Miles</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Claim (£)</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Charge (£)</th>
-                <th className="px-4 py-3 whitespace-nowrap">Comments</th>
+                <th className="px-4 py-3 whitespace-nowrap text-right">Claim ({DEFAULT_CURRENCY})</th>
+                <th className="px-4 py-3 whitespace-nowrap text-right">Charge ({DEFAULT_CURRENCY})</th>
+                <th className="px-4 py-3 whitespace-nowrap">Description</th>
                 <th className="px-4 py-3 whitespace-nowrap w-24"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {entries.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
-                    No trips recorded yet. Add your first trip above!
+                  <td colSpan={7} className="px-4 py-10 text-center">
+                    <div className="mx-auto flex max-w-md flex-col items-center gap-3">
+                      <div className="rounded-full bg-indigo-50 p-3">
+                        <Navigation className="h-5 w-5 text-indigo-500" />
+                      </div>
+                      <p className="font-semibold text-slate-700">No trips recorded yet</p>
+                      <p className="text-sm text-slate-500">
+                        Add your first trip to start seeing mileage totals and report-ready values.
+                      </p>
+                      <div className="mt-1 flex gap-2">
+                        <Button onClick={openTripForm}>
+                          <Plus className="w-4 h-4" />
+                          Add First Trip
+                        </Button>
+                        <Button variant="secondary" onClick={onOpenLocationsTab}>
+                          Manage Locations
+                        </Button>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ) : (
                 entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-3 font-medium text-slate-700">{entry.date}</td>
+                  <tr
+                    key={entry.id}
+                    className={`hover:bg-slate-50 transition-colors ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
+                  >
+                    <td className="px-4 py-3 font-medium text-slate-700">{formatDate(entry.date)}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-1 text-xs text-slate-500">
@@ -1288,17 +1782,9 @@ const TrackerView = ({
                     <td className="px-4 py-3 text-right font-medium text-slate-700">
                       {Number.parseFloat(entry.totalMiles || "0").toFixed(1)}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold text-emerald-600">£{entry.totalClaim}</td>
-                    <td className="px-4 py-3 text-right font-bold text-blue-600">£{entry.totalCharge}</td>
-                    <td className="px-4 py-3 text-slate-500 italic truncate max-w-[150px]">
-                      <EditableComment
-                        id={entry.id}
-                        initialValue={entry.comments || ""}
-                        onSave={async (id, value) => {
-                          await onUpdateEntry(id, { comments: value })
-                        }}
-                      />
-                    </td>
+                    <td className="px-4 py-3 text-right font-bold text-emerald-600">{formatCurrency(entry.totalClaim)}</td>
+                    <td className="px-4 py-3 text-right font-bold text-blue-600">{formatCurrency(entry.totalCharge)}</td>
+                    <td className="px-4 py-3 text-slate-500 truncate max-w-[220px]">{entry.description || "-"}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-1">
                         <button
@@ -1310,7 +1796,7 @@ const TrackerView = ({
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => onDeleteEntry(entry.id)}
+                          onClick={() => setEntryIdToDelete(entry.id)}
                           className="text-slate-400 hover:text-red-500 transition-colors p-1"
                           title="Delete Entry"
                           type="button"
@@ -1329,91 +1815,207 @@ const TrackerView = ({
         {/* Mobile Card View */}
         <div className="md:hidden divide-y divide-slate-100">
           {entries.length === 0 ? (
-            <div className="px-4 py-8 text-center text-slate-500">
-              No trips recorded yet. Add your first trip above!
+            <div className="px-4 py-10 text-center">
+              <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+                <div className="rounded-full bg-indigo-50 p-3">
+                  <Navigation className="h-5 w-5 text-indigo-500" />
+                </div>
+                <p className="font-semibold text-slate-700">No trips recorded yet</p>
+                <p className="text-sm text-slate-500">
+                  Add your first trip to unlock totals and cleaner exports.
+                </p>
+                <div className="mt-1 flex w-full flex-col gap-2">
+                  <Button onClick={openTripForm} className="w-full">
+                    <Plus className="w-4 h-4" />
+                    Add First Trip
+                  </Button>
+                  <Button variant="secondary" onClick={onOpenLocationsTab} className="w-full">
+                    Manage Locations
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : (
             entries.map((entry) => (
-              <div key={entry.id} className="p-4 space-y-3">
-                {/* Date and Actions */}
-                <div className="flex items-center justify-between">
-                  <div className="font-bold text-slate-700">{entry.date}</div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleEditClick(entry)}
-                      className="text-slate-400 hover:text-indigo-600 transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
-                      title="Edit Entry"
-                      type="button"
-                    >
-                      <Pencil className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => onDeleteEntry(entry.id)}
-                      className="text-slate-400 hover:text-red-500 transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
-                      title="Delete Entry"
-                      type="button"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Route */}
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-sm">
-                    <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
-                    <span className="font-medium text-slate-700">{entry.startPoint}</span>
-                  </div>
-                  {(entry.stop1 || entry.stop2) && (
-                    <div className="pl-4 border-l-2 border-slate-200 ml-1 space-y-1 py-1">
-                      {entry.stop1 && <div className="text-xs text-slate-500">• {entry.stop1}</div>}
-                      {entry.stop2 && <div className="text-xs text-slate-500">• {entry.stop2}</div>}
-                      {(entry.stop3 || entry.stop4) && (
-                        <div className="text-xs text-slate-400 italic">+ more stops</div>
-                      )}
+              <div
+                key={entry.id}
+                className={`p-4 space-y-3 ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-700">{formatDate(entry.date)}</div>
+                    <div className="mt-1 text-sm font-medium text-slate-700 truncate">
+                      {entry.startPoint} {"->"} {entry.finishPoint}
                     </div>
-                  )}
-                  <div className="flex items-center gap-2 text-sm">
-                    <div className="w-2 h-2 rounded-full bg-red-400 flex-shrink-0"></div>
-                    <span className="font-medium text-slate-700">{entry.finishPoint}</span>
+                    {entry.clientsVisited && (
+                      <div className="mt-1 text-xs text-slate-500 truncate">Client: {entry.clientsVisited}</div>
+                    )}
                   </div>
+                  <Button variant="secondary" onClick={() => setMobileDetailsEntryId(entry.id)} className="shrink-0 px-3">
+                    Details
+                  </Button>
                 </div>
 
-                {/* Client */}
-                {entry.clientsVisited && (
-                  <div className="text-sm">
-                    <span className="text-slate-500">Client: </span>
-                    <span className="font-medium text-slate-700">{entry.clientsVisited}</span>
-                  </div>
-                )}
-
-                {/* Stats Grid */}
-                <div className="grid grid-cols-3 gap-3 pt-2">
+                <div className="grid grid-cols-3 gap-3 pt-1">
                   <div className="text-center p-2 bg-slate-50 rounded-lg">
                     <div className="text-xs text-slate-500 mb-1">Miles</div>
-                    <div className="font-bold text-slate-700">
-                      {Number.parseFloat(entry.totalMiles || "0").toFixed(1)}
-                    </div>
+                    <div className="font-bold text-slate-700">{Number.parseFloat(entry.totalMiles || "0").toFixed(1)}</div>
                   </div>
                   <div className="text-center p-2 bg-emerald-50 rounded-lg">
                     <div className="text-xs text-emerald-700 mb-1">Claim</div>
-                    <div className="font-bold text-emerald-600">£{entry.totalClaim}</div>
+                    <div className="font-bold text-emerald-600">{formatCurrency(entry.totalClaim)}</div>
                   </div>
                   <div className="text-center p-2 bg-blue-50 rounded-lg">
                     <div className="text-xs text-blue-700 mb-1">Charge</div>
-                    <div className="font-bold text-blue-600">£{entry.totalCharge}</div>
+                    <div className="font-bold text-blue-600">{formatCurrency(entry.totalCharge)}</div>
                   </div>
                 </div>
-
-                {/* Comments */}
-                {entry.comments && (
-                  <div className="text-sm text-slate-500 italic pt-2 border-t border-slate-100">{entry.comments}</div>
-                )}
               </div>
             ))
           )}
         </div>
       </Card>
+
+      <Drawer open={Boolean(mobileDetailsEntryId)} onOpenChange={(open) => !open && setMobileDetailsEntryId(null)}>
+        <DrawerContent className="md:hidden max-h-[88vh]">
+          {mobileDetailsEntry && (
+            <>
+              <DrawerHeader className="text-left border-b border-slate-100">
+                <DrawerTitle>{formatDate(mobileDetailsEntry.date)}</DrawerTitle>
+                <DrawerDescription>
+                  {mobileDetailsEntry.startPoint} {"->"} {mobileDetailsEntry.finishPoint}
+                </DrawerDescription>
+              </DrawerHeader>
+              <div className="space-y-4 overflow-y-auto px-4 py-4">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-slate-50 p-3 text-center">
+                    <p className="text-[11px] uppercase font-semibold text-slate-500">Miles</p>
+                    <p className="text-sm font-bold text-slate-700">
+                      {Number.parseFloat(mobileDetailsEntry.totalMiles || "0").toFixed(1)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-emerald-50 p-3 text-center">
+                    <p className="text-[11px] uppercase font-semibold text-emerald-700">Claim</p>
+                    <p className="text-sm font-bold text-emerald-600">{formatCurrency(mobileDetailsEntry.totalClaim)}</p>
+                  </div>
+                  <div className="rounded-lg bg-blue-50 p-3 text-center">
+                    <p className="text-[11px] uppercase font-semibold text-blue-700">Charge</p>
+                    <p className="text-sm font-bold text-blue-600">{formatCurrency(mobileDetailsEntry.totalCharge)}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="mb-2 text-[11px] uppercase tracking-wide font-semibold text-slate-500">Route Stops</p>
+                  <div className="space-y-1 text-sm text-slate-700">
+                    <div>Start: {mobileDetailsEntry.startPoint}</div>
+                    {[mobileDetailsEntry.stop1, mobileDetailsEntry.stop2, mobileDetailsEntry.stop3, mobileDetailsEntry.stop4]
+                      .filter(Boolean)
+                      .map((stop, index) => (
+                        <div key={`${mobileDetailsEntry.id}-stop-${index}`}>Stop {index + 1}: {stop}</div>
+                      ))}
+                    <div>Finish: {mobileDetailsEntry.finishPoint}</div>
+                  </div>
+                </div>
+
+                {mobileDetailsEntry.clientsVisited && (
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Client</p>
+                    <p className="mt-1 text-sm text-slate-700">{mobileDetailsEntry.clientsVisited}</p>
+                  </div>
+                )}
+
+                {mobileDetailsEntry.description && (
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Description</p>
+                    <p className="mt-1 text-sm text-slate-700">{mobileDetailsEntry.description}</p>
+                  </div>
+                )}
+
+                {mobileDetailsEntry.comments && (
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Comments</p>
+                    <p className="mt-1 text-sm text-slate-700">{mobileDetailsEntry.comments}</p>
+                  </div>
+                )}
+              </div>
+              <DrawerFooter className="border-t border-slate-100 pb-safe">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      handleEditClick(mobileDetailsEntry)
+                    }}
+                    className="w-full"
+                  >
+                    Edit Trip
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="w-full text-red-600 border-red-200 hover:bg-red-50"
+                    onClick={() => {
+                      setMobileDetailsEntryId(null)
+                      setEntryIdToDelete(mobileDetailsEntry.id)
+                    }}
+                  >
+                    Delete Trip
+                  </Button>
+                </div>
+                <DrawerClose asChild>
+                  <Button variant="secondary">Close</Button>
+                </DrawerClose>
+              </DrawerFooter>
+            </>
+          )}
+        </DrawerContent>
+      </Drawer>
+
+      <AlertDialog open={Boolean(entryIdToDelete)} onOpenChange={(open) => !open && setEntryIdToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this trip?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The selected trip entry will be permanently removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingEntry}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingEntry}
+              onClick={(e) => {
+                e.preventDefault()
+                void confirmDeleteEntry()
+              }}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {isDeletingEntry ? "Deleting..." : "Delete Trip"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isDeleteAllOpen} onOpenChange={setIsDeleteAllOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all trips?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all {entries.length} entries in your history. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingAll}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingAll}
+              onClick={(e) => {
+                e.preventDefault()
+                void confirmDeleteAllEntries()
+              }}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {isDeletingAll ? "Deleting..." : "Delete All Trips"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
@@ -1456,7 +2058,11 @@ const LocationsView = ({
     e.preventDefault()
     if (!newRoute.from || !newRoute.to || !newRoute.distance) return
     if (!user) {
-      alert("Wait for connection...")
+      toast({
+        title: "Still connecting",
+        description: "Wait for Cloud Connected before saving routes.",
+        variant: "destructive",
+      })
       return
     }
 
@@ -1471,9 +2077,11 @@ const LocationsView = ({
       )
 
       if (existing) {
-        alert(
-          `A route between ${existing.from} and ${existing.to} already exists (${existing.distance} mi). Saved routes are reversible!`,
-        )
+        toast({
+          title: "Route already exists",
+          description: `${existing.from} ↔ ${existing.to} (${existing.distance} mi) is already saved.`,
+          variant: "destructive",
+        })
         return
       }
 
@@ -1525,7 +2133,7 @@ const LocationsView = ({
   return (
     <div className="space-y-6">
       {/* Mobile Navigation Tabs */}
-      <div className="md:hidden grid grid-cols-4 gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm mb-6 sticky top-20 z-40">
+      <div className="md:hidden grid grid-cols-4 gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm mb-6 sticky top-24 z-40">
         <button
           onClick={() => setMobileTab("add-location")}
           className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "add-location"
@@ -1571,7 +2179,7 @@ const LocationsView = ({
       {/* SECTION 1: LOCATIONS */}
       <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 ${mobileTab.includes("location") ? "block" : "hidden md:grid"}`}>
         <div className={`lg:col-span-1 ${mobileTab === "add-location" ? "block" : "hidden md:block"}`}>
-          <Card className="p-6 sticky top-6">
+          <Card className="p-6 lg:sticky lg:top-6">
             <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
               <MapPin className="w-5 h-5 text-indigo-600" />
               Add New Location
@@ -1589,7 +2197,7 @@ const LocationsView = ({
                 value={newLoc.address}
                 onChange={(e) => setNewLoc({ ...newLoc, address: e.target.value })}
               />
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Input
                   label="City"
                   placeholder="Bolton"
@@ -1628,22 +2236,33 @@ const LocationsView = ({
                 {locations.length} locations
               </span>
             </div>
-            <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+            <div className="divide-y divide-slate-100 md:max-h-[500px] md:overflow-y-auto">
               {locations.length === 0 ? (
-                <div className="p-8 text-center text-slate-500">No locations added yet.</div>
+                <div className="p-8 text-center">
+                  <div className="mx-auto flex max-w-xs flex-col items-center gap-3">
+                    <div className="rounded-full bg-indigo-50 p-3">
+                      <MapPin className="h-5 w-5 text-indigo-500" />
+                    </div>
+                    <p className="font-semibold text-slate-700">No locations yet</p>
+                    <p className="text-sm text-slate-500">Add Home, Office, and client locations to speed up trip logging.</p>
+                    <Button variant="secondary" onClick={() => setMobileTab("add-location")}>
+                      Add First Location
+                    </Button>
+                  </div>
+                </div>
               ) : (
                 locations.map((loc) => (
                   <div
                     key={loc.id}
-                    className="p-4 flex items-center justify-between hover:bg-slate-50 group transition-colors"
+                    className="p-4 flex items-start justify-between gap-3 hover:bg-slate-50 group transition-colors"
                   >
-                    <div className="flex items-start gap-3">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div
                         className={`mt-1 w-2 h-2 rounded-full ${loc.category === "Personal" ? "bg-emerald-400" : loc.category === "Office" ? "bg-blue-400" : "bg-indigo-400"}`}
                       ></div>
-                      <div>
-                        <h4 className="font-bold text-slate-700">{loc.name}</h4>
-                        <p className="text-sm text-slate-500">
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-slate-700 truncate">{loc.name}</h4>
+                        <p className="text-sm text-slate-500 break-words">
                           {loc.address}, {loc.city}, {loc.postcode}
                         </p>
                         <span className="inline-block mt-1 text-[10px] uppercase font-bold text-slate-400 tracking-wider border border-slate-200 px-1.5 rounded">
@@ -1653,7 +2272,7 @@ const LocationsView = ({
                     </div>
                     <button
                       onClick={() => onDeleteLocation(loc.id)}
-                      className="opacity-100 md:opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-2"
+                      className="opacity-100 md:opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-2 shrink-0"
                     >
                       <Trash2 className="w-5 h-5" />
                     </button>
@@ -1720,23 +2339,34 @@ const LocationsView = ({
               <div className="bg-slate-100 px-6 py-3 border-b border-slate-200">
                 <h3 className="font-bold text-slate-600 text-sm uppercase">Your Saved Routes</h3>
               </div>
-              <div className="divide-y divide-slate-100 min-h-[calc(100vh-250px)] md:min-h-0 md:max-h-[500px] md:overflow-y-auto">
+              <div className="divide-y divide-slate-100 md:max-h-[500px] md:overflow-y-auto">
                 {sortedRoutes.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 text-sm">
-                    No saved routes. Add distances (e.g., Office to Home) to auto-fill your trips.
+                  <div className="p-8 text-center">
+                    <div className="mx-auto flex max-w-xs flex-col items-center gap-3">
+                      <div className="rounded-full bg-indigo-50 p-3">
+                        <Route className="h-5 w-5 text-indigo-500" />
+                      </div>
+                      <p className="font-semibold text-slate-700">No saved routes yet</p>
+                      <p className="text-sm text-slate-500">
+                        Save common distances (for example Office to Home) so trip totals auto-fill.
+                      </p>
+                      <Button variant="secondary" onClick={() => setMobileTab("add-route")}>
+                        Add First Distance
+                      </Button>
+                    </div>
                   </div>
                 ) : (
                   sortedRoutes.map((route) => (
                     <div
                       key={route.id}
-                      className={`p-3 flex items-center justify-between group transition-colors ${editingRouteId === route.id ? "bg-orange-50" : "hover:bg-slate-50"}`}
+                      className={`p-3 flex items-center justify-between gap-2 group transition-colors ${editingRouteId === route.id ? "bg-orange-50" : "hover:bg-slate-50"}`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="font-bold text-slate-700">{route.displayFrom}</span>
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayFrom}</span>
                         <ArrowLeftRight className="w-4 h-4 text-slate-300" />
-                        <span className="font-bold text-slate-700">{route.displayTo}</span>
+                        <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayTo}</span>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
                         <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded mr-2">
                           {route.distance} mi
                         </span>

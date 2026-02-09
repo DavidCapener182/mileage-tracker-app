@@ -1,0 +1,65 @@
+Auditing 54 saved routes (tolerance: +/-2.0 mi)...
+
+STATUS      | STORED | MAPS   | DELTA  | ROUTE
+------------+--------+--------+--------+-----------------------------------------------
+OK          |   26.0 |   25.3 |    0.7 | Office -> Music Magpie
+OK          |   26.0 |   25.3 |    0.7 | Music Magpie -> Office
+OK          |   41.0 |   39.8 |    1.2 | Home -> Music Magpie
+OK          |    7.1 |    6.6 |    0.5 | Office -> Footasylum Bury
+OK          |  138.0 |  138.0 |    0.0 | Footasylum Middlesbrough -> Home
+OK          |   30.0 |   31.9 |    1.9 | Home -> Office
+OK          |   40.0 |   39.5 |    0.5 | TFS Rochdale -> Home
+OK          |   67.0 |   67.0 |    0.0 | Home -> FootAsylum Leeds
+OK          |    4.7 |    3.7 |    1.0 | Footasylum Leeds Trinity -> Footasylum Leeds
+OK          |   39.0 |   38.8 |    0.2 | Point 62 -> Home
+OK          |   87.3 |   86.8 |    0.5 | Home -> Footasylum Derby
+OK          |   68.4 |   68.4 |    0.0 | Home -> Footasylum Leeds Trinity
+OK          |   10.0 |   11.3 |    1.3 | Home -> Footasylum Speke
+OK          |    4.1 |    4.9 |    0.8 | Footasylum Rotherham -> Footasylum Meadowhall
+OK          |   17.4 |   17.4 |    0.0 | Office -> Point 62
+OK          |   18.0 |   16.5 |    1.5 | Footasylum Sunderland -> Footasylum Newcastle Metro
+OK          |    6.0 |    5.0 |    1.0 | Footasylum Newcastle Metro -> Footasylum Newcastle
+OK          |   40.0 |   39.9 |    0.1 | Footasylum Newcastle -> Footasylum Middlesbrough
+OK          |   13.0 |   14.8 |    1.8 | Office -> Footasylum Manchester Arndale
+MISMATCH    |   46.0 |   27.6 |   18.4 | Home -> TFS Chester
+OK          |    8.7 |    8.4 |    0.3 | Footasylum Broughton -> TFS Chester
+OK          |   30.4 |   30.4 |    0.0 | Footasylum Denton -> Home
+OK          |  122.0 |  121.8 |    0.2 | Home -> Footasylum Hull
+OK          |   67.0 |   68.6 |    1.6 | Footasylum Bradford -> Footasylum Hull
+OK          |  223.0 |  223.4 |    0.4 | Home -> Footasylum Braehead
+OK          |    6.7 |    6.7 |    0.0 | Footasylum Braehead -> Footasylum Glasgow Argyle
+OK          |    7.0 |    6.8 |    0.2 | Footasylum Glasgow Argyle -> Footasylum Glasgow Fort
+OK          |    7.0 |    6.1 |    0.9 | Footasylum Glasgow Fort -> Glasgow Z Hotel
+OK          |  144.0 |  144.2 |    0.2 | Glasgow Z Hotel -> Footasylum Aberdeen
+OK          |   66.0 |   65.8 |    0.2 | Footasylum Aberdeen -> Footasylum Dundee
+OK          |   80.0 |   79.8 |    0.2 | Footasylum Dundee -> Glasgow Z Hotel
+OK          |  137.0 |  136.7 |    0.3 | Home -> Footasylum Stockton on Tees
+OK          |   57.0 |   57.9 |    0.9 | Home -> Footasylum Blackpool
+OK          |   19.3 |   19.5 |    0.2 | Footasylum Blackpool -> Footasylum Presto
+OK          |   10.5 |   11.0 |    0.5 | Footasylum Presto -> Footasylum Blackburn
+OK          |   42.0 |   41.4 |    0.6 | Footasylum Blackburn -> Home
+OK          |   64.6 |   64.6 |    0.0 | Footasylum Bradford -> Home
+OK          |   33.5 |   33.5 |    0.0 | Footasylum Broughton -> Home
+OK          |    9.7 |    9.7 |    0.0 | Footasylum Bury -> Footasylum Denton
+OK          |   11.6 |   11.6 |    0.0 | Footasylum Doncaster -> Footasylum Rotherham
+OK          |   36.9 |   36.9 |    0.0 | FootAsylum Liverpool One -> Office
+OK          |    8.0 |    8.0 |    0.0 | FootAsylum Liverpool One -> Home
+OK          |   44.9 |   44.9 |    0.0 | FootAsylum Liverpool One -> Music Magpie
+OK          |   76.8 |   76.8 |    0.0 | Footasylum Meadowhall -> Home
+OK          |   14.1 |   14.1 |    0.0 | Footasylum Sunderland -> Footasylum Newcastle
+OK          |  219.8 |  219.8 |    0.0 | Glasgow Z Hotel -> Home
+OK          |  163.5 |  163.5 |    0.0 | Home -> Footasylum Sunderland
+OK          |   32.0 |   32.0 |    0.0 | Home -> Daily Spaces Trailberg Party
+OK          |    7.3 |    8.0 |    0.7 | Home -> FootAsylum Liverpool One
+OK          |   95.1 |   95.1 |    0.0 | Home -> Footasylum Doncaster
+OK          |   43.5 |   44.9 |    1.4 | Music Magpie -> FootAsylum Liverpool One
+OK          |   32.7 |   31.9 |    0.8 | Office -> Home
+OK          |   17.8 |   17.8 |    0.0 | Office -> TFS Rochdale
+OK          |   36.4 |   36.9 |    0.5 | Office -> FootAsylum Liverpool One
+
+Summary:
+- Total routes checked: 54
+- OK: 53
+- MISMATCH: 1
+- NO_STORED: 0
+- NO_MAPS: 0

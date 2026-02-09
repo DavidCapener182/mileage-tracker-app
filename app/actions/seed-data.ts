@@ -17,7 +17,7 @@ export async function seedInitialData() {
 
   try {
     // Check if data already exists
-    const { data: existingLocations } = await supabase.from("locations").select("id").limit(1)
+    const { data: existingLocations } = await supabase.from("mt_locations").select("id").limit(1)
 
     if (existingLocations && existingLocations.length > 0) {
       return { success: true, message: "Data already seeded" }
@@ -59,7 +59,7 @@ export async function seedInitialData() {
       },
     ]
 
-    const { error: locError } = await supabase.from("locations").insert(locationsToInsert)
+    const { error: locError } = await supabase.from("mt_locations").insert(locationsToInsert)
 
     if (locError) throw locError
 
@@ -79,7 +79,7 @@ export async function seedInitialData() {
       { userid: user.id, from: "FootAsylum Liverpool One", to: "Office", distance: "30" },
     ]
 
-    const { error: routeError } = await supabase.from("saved_routes").insert(routesToInsert)
+    const { error: routeError } = await supabase.from("mt_saved_routes").insert(routesToInsert)
 
     if (routeError) throw routeError
 
@@ -162,7 +162,7 @@ export async function seedInitialData() {
       },
     ]
 
-    const { error: entriesError } = await supabase.from("entries").insert(entriesToInsert)
+    const { error: entriesError } = await supabase.from("mt_entries").insert(entriesToInsert)
 
     if (entriesError) throw entriesError
 
@@ -182,9 +182,9 @@ export async function resetData() {
   if (!user) return { success: false, error: "Not authenticated" }
 
   // Delete all data
-  await supabase.from("entries").delete().eq("userid", user.id)
-  await supabase.from("saved_routes").delete().eq("userid", user.id)
-  await supabase.from("locations").delete().eq("userid", user.id)
+  await supabase.from("mt_entries").delete().eq("userid", user.id)
+  await supabase.from("mt_saved_routes").delete().eq("userid", user.id)
+  await supabase.from("mt_locations").delete().eq("userid", user.id)
 
   // Re-seed
   return await seedInitialData()
