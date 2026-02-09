@@ -5,10 +5,10 @@ import type React from "react"
 import { useState, useEffect, useMemo, useRef } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
+import Image from "next/image"
 import {
   Plus,
   MapPin,
-  Car,
   Download,
   Trash2,
   Save,
@@ -656,32 +656,50 @@ export default function MileageTrackerPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      <div className="bg-indigo-900 text-white shadow-lg pt-safe-or-4 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 py-4 sm:h-20">
-            <div className="flex items-center gap-3">
-              <div className="bg-white/10 p-2 rounded-lg">
-                <Car className="w-6 h-6 text-indigo-100" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold tracking-tight">Mileage Tracker Pro</h1>
-                <div className="flex items-center gap-1.5 text-indigo-200 text-xs">
-                  {user ? (
-                    <>
-                      <Cloud className="w-3 h-3 text-emerald-400" />
-                      <span className="text-emerald-100">Cloud Connected</span>
-                    </>
-                  ) : (
-                    <>
-                      <Loader2 className="w-3 h-3 animate-spin text-orange-400" />
-                      <span className="text-orange-100">Connecting...</span>
-                    </>
-                  )}
+      <div className="sticky top-0 z-50 bg-indigo-900 text-white shadow-lg pt-safe-or-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pl-safe pr-safe">
+          <div className="py-3 sm:py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="bg-white/10 p-1.5 rounded-lg shrink-0">
+                  <Image
+                    src="/mileage-tracker-pro-icon.png"
+                    alt="Mileage Tracker Pro"
+                    width={28}
+                    height={28}
+                    priority
+                    className="h-7 w-7 rounded-md object-cover"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h1 className="text-xl font-bold tracking-tight truncate">Mileage Tracker Pro</h1>
+                  <div className="flex items-center gap-1.5 text-indigo-200 text-xs">
+                    {user ? (
+                      <>
+                        <Cloud className="w-3 h-3 text-emerald-400" />
+                        <span className="text-emerald-100">Cloud Connected</span>
+                      </>
+                    ) : (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin text-orange-400" />
+                        <span className="text-orange-100">Connecting...</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
+              <button
+                onClick={handleSignOut}
+                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-white/10 transition-colors flex items-center gap-2 min-h-[44px]"
+                aria-label="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="sm:hidden">Log out</span>
+                <span className="hidden sm:inline">Sign out</span>
+              </button>
             </div>
 
-            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+            <div className="mt-3">
               <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
                 <button
                   onClick={() => setActiveTab("tracker")}
@@ -697,20 +715,12 @@ export default function MileageTrackerPage() {
                   <span className="hidden sm:inline">Locations & Routes</span>
                 </button>
               </div>
-              <button
-                onClick={handleSignOut}
-                className="ml-auto sm:ml-2 px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-white/10 transition-colors flex items-center gap-2 min-h-[44px]"
-                aria-label="Sign out"
-              >
-                <LogOut className="w-4 h-4" />
-                <span className="hidden sm:inline">Sign out</span>
-              </button>
             </div>
           </div>
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-6 pb-safe">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pl-safe pr-safe py-4 sm:py-8 pb-[calc(env(safe-area-inset-bottom)+5.25rem)] md:pb-safe">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 text-slate-400">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
@@ -1315,33 +1325,33 @@ const TrackerView = ({
   const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
 
   return (
-    <div className="space-y-6 pb-24 md:pb-0">
+    <div className="space-y-4 sm:space-y-6 pb-20 md:pb-0">
       {/* Stats Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
-        <Card className="p-4 flex items-center justify-between bg-white">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 md:gap-4">
+        <Card className="p-3 sm:p-4 flex items-center justify-between bg-white">
           <div>
-            <p className="text-slate-500 text-sm font-medium">Total Miles</p>
-            <p className="text-2xl sm:text-3xl font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
+            <p className="text-slate-500 text-xs sm:text-sm font-medium">Total Miles</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
           </div>
-          <Navigation className="w-8 h-8 text-indigo-500 opacity-20" />
+          <Navigation className="w-7 h-7 sm:w-8 sm:h-8 text-indigo-500 opacity-20" />
         </Card>
-        <Card className="p-4 flex items-center justify-between bg-white border-emerald-200 border-l-4">
+        <Card className="p-3 sm:p-4 flex items-center justify-between bg-white border-emerald-200 border-l-4">
           <div>
-            <p className="text-emerald-700 text-sm font-medium">Total Claimable</p>
-            <p className="text-2xl sm:text-3xl font-bold text-emerald-600">{formatCurrency(totals.claim)}</p>
+            <p className="text-emerald-700 text-xs sm:text-sm font-medium">Total Claimable</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-emerald-600">{formatCurrency(totals.claim)}</p>
           </div>
-          <PoundSterling className="w-8 h-8 text-emerald-500 opacity-20" />
+          <PoundSterling className="w-7 h-7 sm:w-8 sm:h-8 text-emerald-500 opacity-20" />
         </Card>
-        <Card className="p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
+        <Card className="col-span-2 sm:col-span-1 p-3 sm:p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
           <div>
-            <p className="text-blue-700 text-sm font-medium">Total Chargeable</p>
-            <p className="text-2xl sm:text-3xl font-bold text-blue-600">{formatCurrency(totals.charge)}</p>
+            <p className="text-blue-700 text-xs sm:text-sm font-medium">Total Chargeable</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-600">{formatCurrency(totals.charge)}</p>
           </div>
-          <FileText className="w-8 h-8 text-blue-500 opacity-20" />
+          <FileText className="w-7 h-7 sm:w-8 sm:h-8 text-blue-500 opacity-20" />
         </Card>
       </div>
 
-      <Card className="p-4 md:p-5">
+      <Card className="p-3 sm:p-4 md:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-sm font-semibold text-slate-800">AI Trip Assistant</p>
@@ -1349,18 +1359,18 @@ const TrackerView = ({
               Describe a trip in plain English, or use guided prompts. AI will prepare a draft.
             </p>
           </div>
-          <div className="flex rounded-lg border border-slate-200 p-1">
+          <div className="flex w-full sm:w-auto rounded-lg border border-slate-200 p-1">
             <button
               type="button"
               onClick={() => setAssistantMode("freeform")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "freeform" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+              className={`flex-1 sm:flex-none rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "freeform" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
             >
               Free Text
             </button>
             <button
               type="button"
               onClick={() => setAssistantMode("guided")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "guided" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+              className={`flex-1 sm:flex-none rounded-md px-3 py-1.5 text-xs font-medium ${assistantMode === "guided" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
             >
               Guided
             </button>
@@ -1488,8 +1498,8 @@ const TrackerView = ({
       </Card>
 
       {/* Action Bar */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <h2 className="text-lg font-bold text-slate-800">Recent Entries</h2>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
+        <h2 className="text-base sm:text-lg font-bold text-slate-800">Recent Entries</h2>
         <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:flex-wrap sm:w-auto">
           <Button variant="secondary" onClick={onRefresh} className="w-full sm:w-auto">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1524,8 +1534,8 @@ const TrackerView = ({
         </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur md:hidden pb-safe">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-2 px-4 py-3">
+      <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.5rem)] z-40 rounded-2xl border border-slate-200 bg-white/95 shadow-lg backdrop-blur md:hidden">
+        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-2 px-2 py-2">
           <Button variant="secondary" onClick={onExport} className="w-full">
             <Download className="w-4 h-4" />
             Export
@@ -1540,9 +1550,9 @@ const TrackerView = ({
       {/* Entry Form */}
       {isFormOpen && (
         <Card
-          className={`p-6 bg-white border-2 shadow-lg ring-4 animate-in slide-in-from-top-4 duration-300 ${editingId ? "border-orange-200 ring-orange-50" : "border-indigo-100 ring-indigo-50"}`}
+          className={`p-4 sm:p-6 bg-white border-2 shadow-lg ring-4 animate-in slide-in-from-top-4 duration-300 ${editingId ? "border-orange-200 ring-orange-50" : "border-indigo-100 ring-indigo-50"}`}
         >
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <h3 className={`font-bold flex items-center gap-2 ${editingId ? "text-orange-600" : "text-indigo-900"}`}>
                 {editingId ? (
@@ -1839,35 +1849,39 @@ const TrackerView = ({
             entries.map((entry) => (
               <div
                 key={entry.id}
-                className={`p-4 space-y-3 ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
+                className={`p-3 space-y-2.5 ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="font-bold text-slate-700">{formatDate(entry.date)}</div>
-                    <div className="mt-1 text-sm font-medium text-slate-700 truncate">
+                    <div className="font-semibold text-sm text-slate-700">{formatDate(entry.date)}</div>
+                    <div className="mt-1 text-sm font-medium leading-tight text-slate-700 break-words">
                       {entry.startPoint} {"->"} {entry.finishPoint}
                     </div>
                     {entry.clientsVisited && (
-                      <div className="mt-1 text-xs text-slate-500 truncate">Client: {entry.clientsVisited}</div>
+                      <div className="mt-1 text-xs text-slate-500 break-words">Client: {entry.clientsVisited}</div>
                     )}
                   </div>
-                  <Button variant="secondary" onClick={() => setMobileDetailsEntryId(entry.id)} className="shrink-0 px-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setMobileDetailsEntryId(entry.id)}
+                    className="shrink-0 px-2.5 min-h-[38px] text-xs"
+                  >
                     Details
                   </Button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3 pt-1">
-                  <div className="text-center p-2 bg-slate-50 rounded-lg">
-                    <div className="text-xs text-slate-500 mb-1">Miles</div>
-                    <div className="font-bold text-slate-700">{Number.parseFloat(entry.totalMiles || "0").toFixed(1)}</div>
+                <div className="grid grid-cols-3 gap-2 pt-0.5">
+                  <div className="text-center p-1.5 bg-slate-50 rounded-lg">
+                    <div className="text-[11px] text-slate-500 mb-0.5">Miles</div>
+                    <div className="font-bold text-sm text-slate-700">{Number.parseFloat(entry.totalMiles || "0").toFixed(1)}</div>
                   </div>
-                  <div className="text-center p-2 bg-emerald-50 rounded-lg">
-                    <div className="text-xs text-emerald-700 mb-1">Claim</div>
-                    <div className="font-bold text-emerald-600">{formatCurrency(entry.totalClaim)}</div>
+                  <div className="text-center p-1.5 bg-emerald-50 rounded-lg">
+                    <div className="text-[11px] text-emerald-700 mb-0.5">Claim</div>
+                    <div className="font-bold text-sm text-emerald-600">{formatCurrency(entry.totalClaim)}</div>
                   </div>
-                  <div className="text-center p-2 bg-blue-50 rounded-lg">
-                    <div className="text-xs text-blue-700 mb-1">Charge</div>
-                    <div className="font-bold text-blue-600">{formatCurrency(entry.totalCharge)}</div>
+                  <div className="text-center p-1.5 bg-blue-50 rounded-lg">
+                    <div className="text-[11px] text-blue-700 mb-0.5">Charge</div>
+                    <div className="font-bold text-sm text-blue-600">{formatCurrency(entry.totalCharge)}</div>
                   </div>
                 </div>
               </div>
@@ -2131,9 +2145,9 @@ const LocationsView = ({
   const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Mobile Navigation Tabs */}
-      <div className="md:hidden grid grid-cols-4 gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm mb-6 sticky top-24 z-40">
+      <div className="md:hidden grid grid-cols-4 gap-1.5 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm mb-4 sticky top-[calc(env(safe-area-inset-top)+5.5rem)] z-40">
         <button
           onClick={() => setMobileTab("add-location")}
           className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[10px] font-bold transition-all ${mobileTab === "add-location"
@@ -2177,9 +2191,9 @@ const LocationsView = ({
       </div>
 
       {/* SECTION 1: LOCATIONS */}
-      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-6 ${mobileTab.includes("location") ? "block" : "hidden md:grid"}`}>
+      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 ${mobileTab.includes("location") ? "block" : "hidden md:grid"}`}>
         <div className={`lg:col-span-1 ${mobileTab === "add-location" ? "block" : "hidden md:block"}`}>
-          <Card className="p-6 lg:sticky lg:top-6">
+          <Card className="p-4 sm:p-6 lg:sticky lg:top-6">
             <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
               <MapPin className="w-5 h-5 text-indigo-600" />
               Add New Location
@@ -2230,7 +2244,7 @@ const LocationsView = ({
         </div>
         <div className={`lg:col-span-2 ${mobileTab === "view-locations" ? "block" : "hidden md:block"}`}>
           <Card>
-            <div className="bg-indigo-900 text-white px-6 py-4 flex justify-between items-center">
+            <div className="bg-indigo-900 text-white px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center">
               <h3 className="font-bold">Saved Locations</h3>
               <span className="text-indigo-200 text-sm bg-indigo-800 px-2 py-1 rounded-full">
                 {locations.length} locations
@@ -2254,14 +2268,14 @@ const LocationsView = ({
                 locations.map((loc) => (
                   <div
                     key={loc.id}
-                    className="p-4 flex items-start justify-between gap-3 hover:bg-slate-50 group transition-colors"
+                    className="p-3 sm:p-4 flex items-start justify-between gap-3 hover:bg-slate-50 group transition-colors"
                   >
                     <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div
                         className={`mt-1 w-2 h-2 rounded-full ${loc.category === "Personal" ? "bg-emerald-400" : loc.category === "Office" ? "bg-blue-400" : "bg-indigo-400"}`}
                       ></div>
                       <div className="min-w-0">
-                        <h4 className="font-bold text-slate-700 truncate">{loc.name}</h4>
+                        <h4 className="font-bold text-slate-700 break-words">{loc.name}</h4>
                         <p className="text-sm text-slate-500 break-words">
                           {loc.address}, {loc.city}, {loc.postcode}
                         </p>
@@ -2285,15 +2299,15 @@ const LocationsView = ({
       </div>
 
       {/* SECTION 2: ROUTES */}
-      <div className={`border-t border-slate-200 pt-8 ${mobileTab.includes("route") ? "block" : "hidden md:block"}`}>
+      <div className={`border-t border-slate-200 pt-6 sm:pt-8 ${mobileTab.includes("route") ? "block" : "hidden md:block"}`}>
         <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2 hidden md:flex">
           <Route className="w-6 h-6 text-indigo-600" />
           Manage Saved Distances
         </h2>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className={`lg:col-span-1 ${mobileTab === "add-route" ? "block" : "hidden md:block"}`}>
             <Card
-              className={`p-6 bg-slate-50 border ${editingRouteId ? "border-orange-300 ring-4 ring-orange-50" : "border-indigo-100"}`}
+              className={`p-4 sm:p-6 bg-slate-50 border ${editingRouteId ? "border-orange-300 ring-4 ring-orange-50" : "border-indigo-100"}`}
             >
               <h3 className={`font-bold mb-3 ${editingRouteId ? "text-orange-600" : "text-slate-700"}`}>
                 {editingRouteId ? "Edit Saved Route" : "Add Known Distance"}
@@ -2336,7 +2350,7 @@ const LocationsView = ({
           </div>
           <div className={`lg:col-span-2 ${mobileTab === "view-routes" ? "block" : "hidden md:block"}`}>
             <Card>
-              <div className="bg-slate-100 px-6 py-3 border-b border-slate-200">
+              <div className="bg-slate-100 px-4 sm:px-6 py-3 border-b border-slate-200">
                 <h3 className="font-bold text-slate-600 text-sm uppercase">Your Saved Routes</h3>
               </div>
               <div className="divide-y divide-slate-100 md:max-h-[500px] md:overflow-y-auto">
@@ -2359,31 +2373,62 @@ const LocationsView = ({
                   sortedRoutes.map((route) => (
                     <div
                       key={route.id}
-                      className={`p-3 flex items-center justify-between gap-2 group transition-colors ${editingRouteId === route.id ? "bg-orange-50" : "hover:bg-slate-50"}`}
+                      className={`group transition-colors ${editingRouteId === route.id ? "bg-orange-50" : "hover:bg-slate-50"}`}
                     >
-                      <div className="flex min-w-0 flex-1 items-center gap-2">
-                        <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayFrom}</span>
-                        <ArrowLeftRight className="w-4 h-4 text-slate-300" />
-                        <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayTo}</span>
+                      <div className="p-3 md:hidden space-y-2">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="flex-1 font-bold text-slate-700 break-words leading-tight">{route.displayFrom}</span>
+                          <ArrowLeftRight className="w-4 h-4 text-slate-300 shrink-0" />
+                          <span className="flex-1 font-bold text-slate-700 text-right break-words leading-tight">{route.displayTo}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded">
+                            {route.distance} mi
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleEditRouteClick(route)}
+                              className="text-slate-400 hover:text-indigo-600 p-2"
+                              title="Edit Route"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => onDeleteRoute(route.id)}
+                              className="text-slate-400 hover:text-red-500 p-2"
+                              title="Delete Route"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded mr-2">
-                          {route.distance} mi
-                        </span>
-                        <button
-                          onClick={() => handleEditRouteClick(route)}
-                          className="text-slate-400 hover:text-indigo-600 p-1"
-                          title="Edit Route"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => onDeleteRoute(route.id)}
-                          className="text-slate-400 hover:text-red-500 p-1"
-                          title="Delete Route"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+
+                      <div className="hidden md:flex p-3 items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayFrom}</span>
+                          <ArrowLeftRight className="w-4 h-4 text-slate-300" />
+                          <span className="font-bold text-slate-700 truncate max-w-[42%] sm:max-w-none">{route.displayTo}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded mr-2">
+                            {route.distance} mi
+                          </span>
+                          <button
+                            onClick={() => handleEditRouteClick(route)}
+                            className="text-slate-400 hover:text-indigo-600 p-1"
+                            title="Edit Route"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => onDeleteRoute(route.id)}
+                            className="text-slate-400 hover:text-red-500 p-1"
+                            title="Delete Route"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))

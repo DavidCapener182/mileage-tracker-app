@@ -1,5 +1,5 @@
 import type React from "react"
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Montserrat } from "next/font/google"
 import { Toaster } from "@/components/ui/toaster"
 import "./globals.css"
@@ -12,29 +12,49 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "Mileage Tracker Pro",
   description: "Track your business mileage and expenses",
+  applicationName: "Mileage Tracker Pro",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Mileage Tracker Pro",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: {
+    telephone: false,
+  },
   generator: "v0.app",
   icons: {
     icon: [
       {
-        media: "(prefers-color-scheme: light)",
-        url: "/icons/light.svg",
+        url: "/mileage-tracker-pro-icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
       },
       {
-        media: "(prefers-color-scheme: dark)",
-        url: "/icons/dark.svg",
+        url: "/mileage-tracker-pro-icon-512.png",
+        sizes: "512x512",
+        type: "image/png",
       },
     ],
+    apple: [
+      {
+        url: "/mileage-tracker-pro-icon-180.png",
+        sizes: "180x180",
+        type: "image/png",
+      },
+    ],
+    shortcut: ["/mileage-tracker-pro-icon-192.png"],
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
   },
 }
 
-// <CHANGE> Added viewport configuration for iOS safe areas
-export const viewport = {
+export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  viewportFit: "cover", // This enables safe area insets on iOS
-  themeColor: "#312e81", // Indigo-900 to match header
+  viewportFit: "cover",
+  themeColor: "#312e81",
 }
 
 export default function RootLayout({
