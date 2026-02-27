@@ -106,9 +106,13 @@ const findBestLocationName = (candidate: string | undefined, locations: RequestL
   const exactNormalized = locations.find((location) => sanitize(location.name) === candidateToken)
   if (exactNormalized) return exactNormalized.name
 
-  const includes = locations.find(
-    (location) => sanitize(location.name).includes(candidateToken) || candidateToken.includes(sanitize(location.name)),
-  )
+  const includes = locations.find((location) => {
+    const locToken = sanitize(location.name)
+    const shorter = Math.min(locToken.length, candidateToken.length)
+    const longer = Math.max(locToken.length, candidateToken.length)
+    if (shorter < 3 || longer > shorter * 2) return false
+    return locToken.includes(candidateToken) || candidateToken.includes(locToken)
+  })
   if (includes) return includes.name
 
   return null
@@ -138,9 +142,11 @@ Convert the user note into strict JSON.
 Rules:
 - The user has these saved locations:
 ${locationListWithAddresses}
+- ONLY match a place to a saved location if the user is clearly referring to that exact business/place. For example, if the user says "Arndale Centre Manchester" and a saved location is "Footasylum Manchester Arndale", these are DIFFERENT places (one is a shopping centre, the other is a specific store) — do NOT match them. When in doubt, treat the place as new/unmatched rather than forcing a wrong match.
 - When a place clearly maps to a saved location, use the EXACT saved location name in the route field.
-- When a place does NOT match any saved location, still fill the route field with a short descriptive name for that place (e.g. "Footasylum Glasgow", "Tesco Extra Bolton"). Also include these names in unmatchedPlaces.
-- For each name in unmatchedPlaces, add an entry in resolvedAddresses with a Google Maps-searchable address or query (e.g. "Footasylum, Silverburn Shopping Centre, Glasgow" or "Tesco Extra, Bolton, UK"). Use any real-world knowledge you have about the business/place to produce the best possible search query.
+- When a place does NOT match any saved location, still fill the route field with the user's own description of that place (e.g. "Arndale Centre Manchester", "Sharp Project Manchester"). Also include these names in unmatchedPlaces.
+- For each name in unmatchedPlaces, add an entry in resolvedAddresses with a Google Maps-searchable address or query. Use any real-world knowledge you have about the business/place to produce the best possible search query (e.g. "Manchester Arndale, Market Street, Manchester, UK" or "Sharp Project, Thorp Road, Manchester, UK").
+- Include ALL stops the user mentions, in order. Never drop a stop just because it does not match a saved location.
 - Keep stop order exactly as traveled.
 - If "today" is used, resolve to ${input.today}.
 - Date must be YYYY-MM-DD.
