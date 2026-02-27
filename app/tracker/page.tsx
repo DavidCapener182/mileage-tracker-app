@@ -104,12 +104,14 @@ interface QuickTripDraft {
       to: string
       distance: string
       source: "saved_route" | "google_maps" | "missing"
+      error?: string
     }>
     missingLegs: string[]
     totalMiles: string
   }
   metadata: {
     usedGoogleMaps: boolean
+    mapsApiConfigured?: boolean
     resolvedAddresses?: Record<string, string>
   }
 }
@@ -1466,6 +1468,33 @@ const TrackerView = ({
                 </span>
               )}
             </div>
+
+            {/* Maps API not configured banner */}
+            {quickDraft.adhocLocations &&
+              quickDraft.adhocLocations.length > 0 &&
+              quickDraft.metadata.mapsApiConfigured === false && (
+                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                  <span className="font-bold">Google Maps API key not configured.</span>{" "}
+                  Ad-hoc locations need the <code className="bg-amber-100 px-1 rounded">GOOGLE_MAPS_API_KEY</code>{" "}
+                  environment variable to auto-calculate distances. Add it to{" "}
+                  <code className="bg-amber-100 px-1 rounded">.env.local</code> (or Vercel env vars) and redeploy.
+                </div>
+              )}
+
+            {/* Maps API error banner */}
+            {quickDraft.metadata.mapsApiConfigured !== false &&
+              quickDraft.distance.legs.some((leg) => leg.error) && (
+                <div className="rounded-md bg-red-50 border border-red-200 p-3 text-xs text-red-800 space-y-1">
+                  <span className="font-bold">Google Maps distance lookup failed:</span>
+                  {quickDraft.distance.legs
+                    .filter((leg) => leg.error)
+                    .map((leg, index) => (
+                      <div key={`leg-err-${index}`}>
+                        {leg.from} → {leg.to}: {leg.error}
+                      </div>
+                    ))}
+                </div>
+              )}
 
             <div className="text-sm text-slate-700">
               <span className="font-semibold">{formatDate(quickDraft.trip.date)}</span>

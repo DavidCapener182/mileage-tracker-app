@@ -220,24 +220,42 @@ ${input.text}
   throw new Error(`Gemini models unavailable for this API key. Tried: ${triedModels}.`)
 }
 
-async function getGoogleMapsMiles(origin: string, destination: string, mapsApiKey: string) {
-  const endpoint = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&key=${encodeURIComponent(mapsApiKey)}`
-  const response = await fetch(endpoint)
-  if (!response.ok) return null
+async function getGoogleMapsMiles(
+  origin: string,
+  destination: string,
+  mapsApiKey: string,
+): Promise<{ miles: number | null; error?: string }> {
+  try {
+    const endpoint = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&key=${encodeURIComponent(mapsApiKey)}`
+    const response = await fetch(endpoint)
 
-  const data = (await response.json()) as {
-    status?: string
-    routes?: Array<{
-      legs?: Array<{ distance?: { value?: number } }>
-    }>
+    if (!response.ok) {
+      return { miles: null, error: `HTTP ${response.status}` }
+    }
+
+    const data = (await response.json()) as {
+      status?: string
+      error_message?: string
+      routes?: Array<{
+        legs?: Array<{ distance?: { value?: number } }>
+      }>
+    }
+
+    if (data.status !== "OK") {
+      return { miles: null, error: `Maps API: ${data.status}${data.error_message ? ` – ${data.error_message}` : ""}` }
+    }
+
+    const meters =
+      data.routes?.[0]?.legs?.reduce((sum, leg) => sum + (leg.distance?.value || 0), 0) || 0
+
+    if (meters <= 0) {
+      return { miles: null, error: "Route returned 0 distance" }
+    }
+
+    return { miles: Number((meters / 1609.344).toFixed(1)) }
+  } catch (err) {
+    return { miles: null, error: err instanceof Error ? err.message : "Unknown fetch error" }
   }
-
-  if (data.status !== "OK") return null
-  const meters =
-    data.routes?.[0]?.legs?.reduce((sum, leg) => sum + (leg.distance?.value || 0), 0) || 0
-
-  if (meters <= 0) return null
-  return Number((meters / 1609.344).toFixed(1))
 }
 
 export async function POST(request: Request) {
@@ -314,7 +332,15 @@ export async function POST(request: Request) {
       return geminiResolvedAddresses[name] || name
     }
 
-    const legs: Array<{ from: string; to: string; distance: string; source: "saved_route" | "google_maps" | "missing" }> = []
+    const mapsApiConfigured = Boolean(mapsApiKey)
+    const legs: Array<{
+      from: string
+      to: string
+      distance: string
+      source: "saved_route" | "google_maps" | "missing"
+      mapsQuery?: { origin: string; destination: string }
+      error?: string
+    }> = []
     let totalMiles = 0
 
     for (let i = 0; i < orderedRoute.length - 1; i += 1) {
@@ -324,16 +350,24 @@ export async function POST(request: Request) {
 
       let miles = legHasAdhoc ? null : getSavedRouteMiles(from, to, savedRoutes)
       let source: "saved_route" | "google_maps" | "missing" = "saved_route"
+      let legError: string | undefined
+      let mapsQuery: { origin: string; destination: string } | undefined
 
-      if (miles === null && mapsApiKey) {
+      if (miles === null && mapsApiConfigured) {
         const fromAddress = getAddressForMaps(from)
         const toAddress = getAddressForMaps(to)
-        miles = await getGoogleMapsMiles(fromAddress, toAddress, mapsApiKey)
+        mapsQuery = { origin: fromAddress, destination: toAddress }
+        const result = await getGoogleMapsMiles(fromAddress, toAddress, mapsApiKey)
+        miles = result.miles
+        legError = result.error
         source = miles === null ? "missing" : "google_maps"
       }
 
       if (miles === null) {
         source = "missing"
+        if (!mapsApiConfigured && legHasAdhoc) {
+          legError = "GOOGLE_MAPS_API_KEY not configured"
+        }
       } else {
         totalMiles += miles
       }
@@ -343,6 +377,8 @@ export async function POST(request: Request) {
         to,
         distance: miles === null ? "" : miles.toFixed(1),
         source,
+        ...(mapsQuery && { mapsQuery }),
+        ...(legError && { error: legError }),
       })
     }
 
@@ -362,6 +398,7 @@ export async function POST(request: Request) {
       },
       metadata: {
         usedGoogleMaps,
+        mapsApiConfigured,
         resolvedAddresses: geminiResolvedAddresses,
       },
     })
