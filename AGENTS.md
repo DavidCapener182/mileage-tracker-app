@@ -27,6 +27,14 @@
 | `GEMINI_API_KEY` | No | Google Gemini API key (AI trip assistant) |
 | `GOOGLE_MAPS_API_KEY` | No | Google Maps Directions API (distance lookup) |
 
+### AI Trip Assistant & Google Maps integration
+
+- The AI Trip Assistant (`/api/ai/quick-trip`) uses Gemini to parse natural-language trip descriptions.
+- **Ad-hoc locations**: Places not in the user's saved locations list are kept as descriptive names in the trip fields. Gemini returns `resolvedAddresses` with Google Maps-searchable queries for these places.
+- **Distance resolution order**: saved routes (bidirectional) → Google Maps Directions API → manual entry.
+- For legs involving ad-hoc locations, saved routes are skipped and Google Maps is used directly.
+- `GOOGLE_MAPS_API_KEY` is required for auto-distance on ad-hoc locations; without it, distances for unknown routes show as "missing".
+
 ### Gotchas
 
 - The app uses `next/font/google` (Montserrat). First dev server start may be slow due to font download.
