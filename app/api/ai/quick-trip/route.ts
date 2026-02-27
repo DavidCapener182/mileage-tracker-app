@@ -25,6 +25,7 @@ interface ParsedTripShape {
   clientsVisited?: string
   description?: string
   unmatchedPlaces?: string[]
+  resolvedAddresses?: Record<string, string>
   confidence?: "high" | "medium" | "low"
 }
 
@@ -123,16 +124,23 @@ async function fetchGeminiParsedTrip(input: {
     throw new Error("Missing GEMINI_API_KEY")
   }
 
-  const locationList = input.locations.map((location) => `- ${location.name}`).join("\n")
+  const locationListWithAddresses = input.locations
+    .map((location) => {
+      const addr = [location.address, location.city, location.postcode].filter(Boolean).join(", ")
+      return addr ? `- ${location.name} (${addr})` : `- ${location.name}`
+    })
+    .join("\n")
 
   const prompt = `
 You are a mileage tracking parser.
 Convert the user note into strict JSON.
 
 Rules:
-- Use only location names from this list when filling startPoint, stop1-stop4, finishPoint:
-${locationList}
-- If place names are mentioned but do not clearly map to the list, leave location fields empty and include those names in unmatchedPlaces.
+- The user has these saved locations:
+${locationListWithAddresses}
+- When a place clearly maps to a saved location, use the EXACT saved location name in the route field.
+- When a place does NOT match any saved location, still fill the route field with a short descriptive name for that place (e.g. "Footasylum Glasgow", "Tesco Extra Bolton"). Also include these names in unmatchedPlaces.
+- For each name in unmatchedPlaces, add an entry in resolvedAddresses with a Google Maps-searchable address or query (e.g. "Footasylum, Silverburn Shopping Centre, Glasgow" or "Tesco Extra, Bolton, UK"). Use any real-world knowledge you have about the business/place to produce the best possible search query.
 - Keep stop order exactly as traveled.
 - If "today" is used, resolve to ${input.today}.
 - Date must be YYYY-MM-DD.
@@ -150,6 +158,7 @@ Return JSON with this shape only:
   "clientsVisited": "",
   "description": "",
   "unmatchedPlaces": [],
+  "resolvedAddresses": {},
   "confidence": "high"
 }
 
@@ -253,25 +262,29 @@ export async function POST(request: Request) {
     }
 
     const rawParsed = await fetchGeminiParsedTrip({ text, today, locations })
-    const unmatched = new Set<string>(rawParsed.unmatchedPlaces || [])
+    const geminiResolvedAddresses: Record<string, string> = rawParsed.resolvedAddresses || {}
+    const adhocLocations: string[] = []
 
-    const resolvedStart = findBestLocationName(rawParsed.startPoint, locations)
-    if (rawParsed.startPoint && !resolvedStart) unmatched.add(rawParsed.startPoint)
+    const resolveLocation = (candidate: string | undefined) => {
+      if (!candidate || !candidate.trim()) return ""
+      const matched = findBestLocationName(candidate, locations)
+      if (matched) return matched
+      const name = candidate.trim()
+      if (!adhocLocations.includes(name)) adhocLocations.push(name)
+      return name
+    }
+
+    const resolvedStart = resolveLocation(rawParsed.startPoint)
 
     const rawStops = Array.isArray(rawParsed.stops)
       ? rawParsed.stops
       : [rawParsed.stop1, rawParsed.stop2, rawParsed.stop3, rawParsed.stop4]
     const resolvedStops = rawStops
-      .map((stop) => {
-        const resolved = findBestLocationName(stop, locations)
-        if (stop && !resolved) unmatched.add(stop)
-        return resolved || ""
-      })
+      .map((stop) => resolveLocation(stop))
       .filter(Boolean)
       .slice(0, 4)
 
-    const resolvedFinish = findBestLocationName(rawParsed.finishPoint, locations)
-    if (rawParsed.finishPoint && !resolvedFinish) unmatched.add(rawParsed.finishPoint)
+    const resolvedFinish = resolveLocation(rawParsed.finishPoint)
 
     const trip = {
       date: normalizeDate(rawParsed.date, today),
@@ -286,12 +299,20 @@ export async function POST(request: Request) {
     }
 
     if (!trip.clientsVisited) {
-      trip.clientsVisited = resolvedStops.join(", ")
+      const clientStops = resolvedStops.filter((s) => !["Home", "Office"].includes(s))
+      trip.clientsVisited = clientStops.join(", ")
     }
 
     const orderedRoute = [trip.startPoint, trip.stop1, trip.stop2, trip.stop3, trip.stop4, trip.finishPoint].filter(Boolean)
     const locationMap = new Map(locations.map((location) => [location.name, location]))
+    const adhocSet = new Set(adhocLocations)
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""
+
+    const getAddressForMaps = (name: string) => {
+      const saved = locationMap.get(name)
+      if (saved) return formatLocationAddress(saved)
+      return geminiResolvedAddresses[name] || name
+    }
 
     const legs: Array<{ from: string; to: string; distance: string; source: "saved_route" | "google_maps" | "missing" }> = []
     let totalMiles = 0
@@ -299,15 +320,14 @@ export async function POST(request: Request) {
     for (let i = 0; i < orderedRoute.length - 1; i += 1) {
       const from = orderedRoute[i]
       const to = orderedRoute[i + 1]
+      const legHasAdhoc = adhocSet.has(from) || adhocSet.has(to)
 
-      let miles = getSavedRouteMiles(from, to, savedRoutes)
+      let miles = legHasAdhoc ? null : getSavedRouteMiles(from, to, savedRoutes)
       let source: "saved_route" | "google_maps" | "missing" = "saved_route"
 
       if (miles === null && mapsApiKey) {
-        const fromLocation = locationMap.get(from)
-        const toLocation = locationMap.get(to)
-        const fromAddress = fromLocation ? formatLocationAddress(fromLocation) : from
-        const toAddress = toLocation ? formatLocationAddress(toLocation) : to
+        const fromAddress = getAddressForMaps(from)
+        const toAddress = getAddressForMaps(to)
         miles = await getGoogleMapsMiles(fromAddress, toAddress, mapsApiKey)
         source = miles === null ? "missing" : "google_maps"
       }
@@ -333,7 +353,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       trip,
       confidence: rawParsed.confidence || "medium",
-      unmatchedPlaces: Array.from(unmatched),
+      unmatchedPlaces: rawParsed.unmatchedPlaces || [],
+      adhocLocations,
       distance: {
         legs,
         missingLegs,
@@ -341,6 +362,7 @@ export async function POST(request: Request) {
       },
       metadata: {
         usedGoogleMaps,
+        resolvedAddresses: geminiResolvedAddresses,
       },
     })
   } catch (error) {

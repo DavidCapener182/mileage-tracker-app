@@ -97,6 +97,7 @@ interface QuickTripDraft {
   }
   confidence: "high" | "medium" | "low"
   unmatchedPlaces: string[]
+  adhocLocations: string[]
   distance: {
     legs: Array<{
       from: string
@@ -109,6 +110,7 @@ interface QuickTripDraft {
   }
   metadata: {
     usedGoogleMaps: boolean
+    resolvedAddresses?: Record<string, string>
   }
 }
 
@@ -802,6 +804,7 @@ const TrackerView = ({
   const [guidedPurpose, setGuidedPurpose] = useState("")
   const [isParsingQuickAdd, setIsParsingQuickAdd] = useState(false)
   const [quickDraft, setQuickDraft] = useState<QuickTripDraft | null>(null)
+  const [draftAdhocNames, setDraftAdhocNames] = useState<string[]>([])
   const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
   const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
   const previousEntryIdsRef = useRef<Set<string>>(new Set())
@@ -858,6 +861,7 @@ const TrackerView = ({
       chargeRate: DEFAULT_CHARGE_RATE,
     })
     setLegDistances({})
+    setDraftAdhocNames([])
     setEditingId(null)
     setIsFormOpen(false)
   }
@@ -1251,6 +1255,7 @@ const TrackerView = ({
     if (!quickDraft) return
     const trip = quickDraft.trip
 
+    setDraftAdhocNames(quickDraft.adhocLocations || [])
     setFormData({
       date: trip.date || getTodayLocalDate(),
       startPoint: trip.startPoint || "",
@@ -1322,7 +1327,14 @@ const TrackerView = ({
     }
   }
 
-  const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
+  const locationOptions = useMemo(() => {
+    const savedOpts = locations.map((l) => ({ value: l.name, label: l.name }))
+    const savedNames = new Set(locations.map((l) => l.name))
+    const adhocOpts = draftAdhocNames
+      .filter((name) => !savedNames.has(name))
+      .map((name) => ({ value: name, label: `${name} (ad-hoc)` }))
+    return [...savedOpts, ...adhocOpts]
+  }, [locations, draftAdhocNames])
 
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 md:pb-0">
@@ -1444,13 +1456,13 @@ const TrackerView = ({
                 Confidence: {quickDraft.confidence}
               </span>
               {quickDraft.metadata.usedGoogleMaps && (
-                <span className="rounded-full bg-white px-2 py-1 font-semibold text-slate-700 border border-slate-200">
-                  Google Maps enabled
+                <span className="rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700 border border-emerald-200">
+                  Distances via Google Maps
                 </span>
               )}
-              {quickDraft.unmatchedPlaces.length > 0 && (
-                <span className="rounded-full bg-amber-50 text-amber-700 px-2 py-1 font-semibold border border-amber-200">
-                  Unmatched: {quickDraft.unmatchedPlaces.join(", ")}
+              {quickDraft.adhocLocations && quickDraft.adhocLocations.length > 0 && (
+                <span className="rounded-full bg-blue-50 text-blue-700 px-2 py-1 font-semibold border border-blue-200">
+                  Ad-hoc: {quickDraft.adhocLocations.join(", ")}
                 </span>
               )}
             </div>
@@ -1458,22 +1470,63 @@ const TrackerView = ({
             <div className="text-sm text-slate-700">
               <span className="font-semibold">{formatDate(quickDraft.trip.date)}</span>
               <span className="mx-2 text-slate-400">|</span>
-              <span>{quickDraft.trip.startPoint || "?"}</span>
-              {[quickDraft.trip.stop1, quickDraft.trip.stop2, quickDraft.trip.stop3, quickDraft.trip.stop4]
-                .filter(Boolean)
-                .map((stop, index) => (
-                  <span key={`draft-stop-${index}`} className="mx-1">
-                    {"->"} {stop}
+              {(() => {
+                const adhocSet = new Set(quickDraft.adhocLocations || [])
+                const allPoints = [
+                  quickDraft.trip.startPoint,
+                  quickDraft.trip.stop1,
+                  quickDraft.trip.stop2,
+                  quickDraft.trip.stop3,
+                  quickDraft.trip.stop4,
+                  quickDraft.trip.finishPoint,
+                ].filter(Boolean)
+                return allPoints.map((point, index) => (
+                  <span key={`draft-point-${index}`}>
+                    {index > 0 && <span className="mx-1 text-slate-400">{"->"}</span>}
+                    <span className={adhocSet.has(point) ? "text-blue-700 font-semibold" : ""}>
+                      {point}
+                    </span>
                   </span>
-                ))}
-              <span className="mx-1">{"->"} {quickDraft.trip.finishPoint || "?"}</span>
+                ))
+              })()}
+              {!quickDraft.trip.startPoint && !quickDraft.trip.finishPoint && <span>?</span>}
             </div>
+
+            {quickDraft.distance.legs.length > 0 && (
+              <div className="flex flex-wrap gap-2 text-xs">
+                {quickDraft.distance.legs.map((leg, index) => (
+                  <div
+                    key={`draft-leg-${index}`}
+                    className={`flex items-center gap-1.5 rounded-md px-2 py-1 border ${
+                      leg.source === "google_maps"
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                        : leg.source === "saved_route"
+                          ? "bg-white border-slate-200 text-slate-600"
+                          : "bg-amber-50 border-amber-200 text-amber-700"
+                    }`}
+                  >
+                    <span className="font-medium truncate max-w-[80px]">{leg.from}</span>
+                    <ArrowRight className="w-3 h-3 flex-shrink-0 opacity-50" />
+                    <span className="font-medium truncate max-w-[80px]">{leg.to}</span>
+                    <span className="font-bold">
+                      {leg.distance ? `${leg.distance} mi` : "?"}
+                    </span>
+                    {leg.source === "google_maps" && (
+                      <span className="text-[10px] opacity-70">Maps</span>
+                    )}
+                    {leg.source === "saved_route" && (
+                      <span className="text-[10px] opacity-70">Saved</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="text-xs text-slate-600">
               Total Miles: <span className="font-semibold">{quickDraft.distance.totalMiles || "Not calculated"}</span>
               {quickDraft.distance.missingLegs.length > 0 && (
                 <span className="ml-2 text-amber-700">
-                  Missing: {quickDraft.distance.missingLegs.join(", ")}
+                  Missing distances: {quickDraft.distance.missingLegs.join(", ")}
                 </span>
               )}
             </div>
