@@ -23,6 +23,7 @@ import {
   ArrowLeftRight,
   PoundSterling,
   List,
+  Car,
 } from "lucide-react"
 import { seedInitialData } from "@/app/actions/seed-data"
 import { toast } from "@/hooks/use-toast"
@@ -809,6 +810,9 @@ const TrackerView = ({
   const [draftAdhocNames, setDraftAdhocNames] = useState<string[]>([])
   const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
   const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
+  const [monthlyStartMileage, setMonthlyStartMileage] = useState("")
+  const [currentMileage, setCurrentMileage] = useState("")
+  const [monthlyVehicleCost, setMonthlyVehicleCost] = useState("")
   const previousEntryIdsRef = useRef<Set<string>>(new Set())
   const locale = useMemo(() => (typeof navigator !== "undefined" ? navigator.language : "en-GB"), [])
   const dateFormatter = useMemo(
@@ -1004,6 +1008,55 @@ const TrackerView = ({
       ),
     [entries],
   )
+  const currentMonthKey = useMemo(() => getTodayLocalDate().slice(0, 7), [])
+  const monthlyBusinessMiles = useMemo(
+    () =>
+      entries.reduce((acc, entry) => {
+        if (!entry.date.startsWith(currentMonthKey)) return acc
+        return acc + (Number.parseFloat(entry.totalMiles) || 0)
+      }, 0),
+    [entries, currentMonthKey],
+  )
+  const monthlyClaimable = useMemo(
+    () =>
+      entries.reduce((acc, entry) => {
+        if (!entry.date.startsWith(currentMonthKey)) return acc
+        return acc + (Number.parseFloat(entry.totalClaim) || 0)
+      }, 0),
+    [entries, currentMonthKey],
+  )
+  const totalVehicleMiles = Math.max(0, (Number.parseFloat(currentMileage) || 0) - (Number.parseFloat(monthlyStartMileage) || 0))
+  const personalMiles = Math.max(0, totalVehicleMiles - monthlyBusinessMiles)
+  const businessCostShare =
+    totalVehicleMiles > 0 ? ((Number.parseFloat(monthlyVehicleCost) || 0) * monthlyBusinessMiles) / totalVehicleMiles : 0
+  const claimVsBusinessCost = monthlyClaimable - businessCostShare
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return
+    const raw = window.localStorage.getItem(`mileage-insights:${user.id}`)
+    if (!raw) return
+
+    try {
+      const parsed = JSON.parse(raw) as {
+        monthlyStartMileage?: string
+        currentMileage?: string
+        monthlyVehicleCost?: string
+      }
+      setMonthlyStartMileage(parsed.monthlyStartMileage || "")
+      setCurrentMileage(parsed.currentMileage || "")
+      setMonthlyVehicleCost(parsed.monthlyVehicleCost || "")
+    } catch {
+      // Ignore malformed localStorage and use default empty values.
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return
+    window.localStorage.setItem(
+      `mileage-insights:${user.id}`,
+      JSON.stringify({ monthlyStartMileage, currentMileage, monthlyVehicleCost }),
+    )
+  }, [user?.id, monthlyStartMileage, currentMileage, monthlyVehicleCost])
 
   useEffect(() => {
     const currentIds = new Set(entries.map((entry) => entry.id))
@@ -1364,6 +1417,65 @@ const TrackerView = ({
           <FileText className="w-7 h-7 sm:w-8 sm:h-8 text-blue-500 opacity-20" />
         </Card>
       </div>
+
+      <Card className="p-3 sm:p-4 md:p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Car className="w-5 h-5 text-indigo-600" />
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Vehicle Mileage & Cost Check</p>
+            <p className="text-xs text-slate-500">Track personal miles and compare business claimable against your running costs.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Input
+            label="Month Start Odometer"
+            type="number"
+            value={monthlyStartMileage}
+            onChange={(e) => setMonthlyStartMileage(e.target.value)}
+            placeholder="e.g. 42100"
+          />
+          <Input
+            label="Current Odometer"
+            type="number"
+            value={currentMileage}
+            onChange={(e) => setCurrentMileage(e.target.value)}
+            placeholder="e.g. 42640"
+          />
+          <Input
+            label="Monthly Vehicle Cost (£)"
+            type="number"
+            value={monthlyVehicleCost}
+            onChange={(e) => setMonthlyVehicleCost(e.target.value)}
+            placeholder="e.g. 400"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total Vehicle Miles</p>
+            <p className="text-lg font-bold text-slate-800">{totalVehicleMiles.toFixed(1)}</p>
+          </div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Business Miles (Month)</p>
+            <p className="text-lg font-bold text-indigo-700">{monthlyBusinessMiles.toFixed(1)}</p>
+          </div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Personal Miles</p>
+            <p className="text-lg font-bold text-orange-600">{personalMiles.toFixed(1)}</p>
+          </div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Business Cost Share</p>
+            <p className="text-lg font-bold text-slate-800">{formatCurrency(businessCostShare)}</p>
+          </div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Claimable vs Cost</p>
+            <p className={`text-lg font-bold ${claimVsBusinessCost >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {formatCurrency(claimVsBusinessCost)}
+            </p>
+          </div>
+        </div>
+      </Card>
 
       <Card className="p-3 sm:p-4 md:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
