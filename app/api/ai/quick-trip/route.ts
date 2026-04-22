@@ -37,11 +37,22 @@ const FALLBACK_MODELS = [
   "gemini-1.5-flash-latest",
   "gemini-1.5-flash",
 ]
+const AI_TEMPORARY_FAILURE_MESSAGE =
+  "AI trip parsing is temporarily unavailable. Please try again in a moment."
+const GEMINI_RETRY_DELAYS_MS = [500, 1500]
+
+type GeminiRequestResult =
+  | { outcome: "success"; parsed: ParsedTripShape }
+  | { outcome: "unavailable" }
+  | { outcome: "transient"; detail: string }
 
 const getGeminiModelCandidates = () =>
   Array.from(new Set([CONFIGURED_MODEL, ...FALLBACK_MODELS].filter(Boolean)))
 
 const isGeminiTransientStatus = (status: number) => [429, 500, 503].includes(status)
+const isTransientNetworkError = (error: unknown) =>
+  error instanceof Error && /fetch failed|network|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND/i.test(error.message)
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const sanitize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "")
 
@@ -120,6 +131,97 @@ const findBestLocationName = (candidate: string | undefined, locations: RequestL
   return null
 }
 
+async function requestGeminiParsedTrip(input: {
+  model: string
+  prompt: string
+  geminiKey: string
+}): Promise<GeminiRequestResult> {
+  let transientDetail = `${input.model} (temporary error)`
+
+  for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent?key=${encodeURIComponent(input.geminiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: input.prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+            },
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        if (response.status === 400 && /api key/i.test(errorText)) {
+          throw new Error("Invalid GEMINI_API_KEY. Update .env.local and restart the dev server.")
+        }
+        if (response.status === 403 && /SERVICE_DISABLED|not been used/i.test(errorText)) {
+          throw new Error("Enable the Generative Language API for this Google project and try again.")
+        }
+        if (response.status === 404 && /models\//i.test(errorText)) {
+          return { outcome: "unavailable" }
+        }
+        if (isGeminiTransientStatus(response.status)) {
+          transientDetail = `${input.model} (${response.status})`
+          if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+            await wait(GEMINI_RETRY_DELAYS_MS[attempt])
+            continue
+          }
+          return { outcome: "transient", detail: transientDetail }
+        }
+        throw new Error(`Gemini request failed for "${input.model}" (${response.status}). ${errorText}`)
+      }
+
+      const data = (await response.json()) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> }
+        }>
+      }
+
+      const candidateText =
+        data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || ""
+
+      if (!candidateText) {
+        transientDetail = `${input.model} (empty response)`
+        if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+          await wait(GEMINI_RETRY_DELAYS_MS[attempt])
+          continue
+        }
+        throw new Error(`Gemini model "${input.model}" returned an empty response`)
+      }
+
+      try {
+        return { outcome: "success", parsed: parseGeminiJson(candidateText) }
+      } catch (error) {
+        transientDetail = `${input.model} (invalid JSON)`
+        if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+          await wait(GEMINI_RETRY_DELAYS_MS[attempt])
+          continue
+        }
+        throw error
+      }
+    } catch (error) {
+      if (isTransientNetworkError(error)) {
+        transientDetail = `${input.model} (network error)`
+        if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+          await wait(GEMINI_RETRY_DELAYS_MS[attempt])
+          continue
+        }
+        return { outcome: "transient", detail: transientDetail }
+      }
+
+      throw error
+    }
+  }
+
+  return { outcome: "transient", detail: transientDetail }
+}
+
 async function fetchGeminiParsedTrip(input: {
   text: string
   today: string
@@ -179,60 +281,18 @@ ${input.text}
   const transientFailures: string[] = []
 
   for (const model of modelCandidates) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-          },
-        }),
-      },
-    )
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      if (response.status === 400 && /api key/i.test(errorText)) {
-        throw new Error("Invalid GEMINI_API_KEY. Update .env.local and restart the dev server.")
-      }
-      if (response.status === 403 && /SERVICE_DISABLED|not been used/i.test(errorText)) {
-        throw new Error("Enable the Generative Language API for this Google project and try again.")
-      }
-      if (response.status === 404 && /models\//i.test(errorText)) {
-        unavailableModels.push(model)
-        continue
-      }
-      if (isGeminiTransientStatus(response.status)) {
-        transientFailures.push(`${model} (${response.status})`)
-        continue
-      }
-      throw new Error(`Gemini request failed for "${model}" (${response.status}). ${errorText}`)
+    const result = await requestGeminiParsedTrip({ model, prompt, geminiKey })
+    if (result.outcome === "success") return result.parsed
+    if (result.outcome === "unavailable") {
+      unavailableModels.push(model)
+      continue
     }
-
-    const data = (await response.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> }
-      }>
-    }
-
-    const candidateText =
-      data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || ""
-
-    if (!candidateText) {
-      throw new Error(`Gemini model "${model}" returned an empty response`)
-    }
-
-    return parseGeminiJson(candidateText)
+    transientFailures.push(result.detail)
   }
 
   if (transientFailures.length > 0) {
-    throw new Error(
-      `AI service is temporarily busy. Please try again in a moment. Tried: ${transientFailures.join(", ")}.`,
-    )
+    console.warn("[quick-trip] Gemini transient failures:", transientFailures.join(", "))
+    throw new Error(AI_TEMPORARY_FAILURE_MESSAGE)
   }
 
   const triedModels = unavailableModels.length > 0 ? unavailableModels.join(", ") : modelCandidates.join(", ")
@@ -423,9 +483,18 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error"
-    const status = /GEMINI_API_KEY|Generative Language API|Gemini model|Gemini models|invalid JSON|empty response/i.test(message)
-      ? 400
-      : 500
-    return NextResponse.json({ error: message }, { status })
+    const isTemporaryAiFailure = message === AI_TEMPORARY_FAILURE_MESSAGE
+    const status = isTemporaryAiFailure
+      ? 503
+      : /GEMINI_API_KEY|Generative Language API|Gemini model|Gemini models|invalid JSON|empty response/i.test(message)
+        ? 400
+        : 500
+    return NextResponse.json(
+      {
+        error: message,
+        ...(isTemporaryAiFailure ? { code: "AI_TEMPORARILY_UNAVAILABLE" } : {}),
+      },
+      { status },
+    )
   }
 }

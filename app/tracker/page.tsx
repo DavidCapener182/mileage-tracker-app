@@ -117,15 +117,30 @@ interface QuickTripDraft {
   }
 }
 
+interface QuickTripErrorResponse {
+  error?: string
+  code?: string
+}
+
 // --- Constants ---
 const DEFAULT_CLAIM_RATE = "0.14"
 const DEFAULT_CHARGE_RATE = "0.25"
 const DEFAULT_CURRENCY = "GBP"
+const QUICK_ADD_TEMPORARY_AI_MESSAGE =
+  "AI trip parsing is temporarily unavailable. Please try again in a moment."
 
 const getTodayLocalDate = () => {
   const now = new Date()
   const timezoneOffset = now.getTimezoneOffset() * 60000
   return new Date(now.getTime() - timezoneOffset).toISOString().slice(0, 10)
+}
+
+const getQuickAddErrorMessage = (status: number, data: QuickTripErrorResponse) => {
+  if (data.code === "AI_TEMPORARILY_UNAVAILABLE" || status === 503) {
+    return QUICK_ADD_TEMPORARY_AI_MESSAGE
+  }
+
+  return data.error || "Could not parse trip note."
 }
 
 // --- UI Components ---
@@ -1260,9 +1275,11 @@ const TrackerView = ({
         }),
       })
 
-      const data = (await response.json()) as QuickTripDraft | { error?: string }
+      const data = (await response.json()) as QuickTripDraft | QuickTripErrorResponse
       if (!response.ok || "error" in data) {
-        throw new Error(("error" in data && data.error) || "Could not parse trip note")
+        throw new Error(
+          getQuickAddErrorMessage(response.status, "error" in data ? data : { error: "Could not parse trip note." }),
+        )
       }
 
       setQuickDraft(data)
