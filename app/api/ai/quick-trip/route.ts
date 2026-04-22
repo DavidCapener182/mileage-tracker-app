@@ -41,6 +41,8 @@ const FALLBACK_MODELS = [
 const getGeminiModelCandidates = () =>
   Array.from(new Set([CONFIGURED_MODEL, ...FALLBACK_MODELS].filter(Boolean)))
 
+const isGeminiTransientStatus = (status: number) => [429, 500, 503].includes(status)
+
 const sanitize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "")
 
 const formatLocationAddress = (location: RequestLocation) =>
@@ -174,6 +176,7 @@ ${input.text}
 
   const modelCandidates = getGeminiModelCandidates()
   const unavailableModels: string[] = []
+  const transientFailures: string[] = []
 
   for (const model of modelCandidates) {
     const response = await fetch(
@@ -203,6 +206,10 @@ ${input.text}
         unavailableModels.push(model)
         continue
       }
+      if (isGeminiTransientStatus(response.status)) {
+        transientFailures.push(`${model} (${response.status})`)
+        continue
+      }
       throw new Error(`Gemini request failed for "${model}" (${response.status}). ${errorText}`)
     }
 
@@ -220,6 +227,12 @@ ${input.text}
     }
 
     return parseGeminiJson(candidateText)
+  }
+
+  if (transientFailures.length > 0) {
+    throw new Error(
+      `AI service is temporarily busy. Please try again in a moment. Tried: ${transientFailures.join(", ")}.`,
+    )
   }
 
   const triedModels = unavailableModels.length > 0 ? unavailableModels.join(", ") : modelCandidates.join(", ")
