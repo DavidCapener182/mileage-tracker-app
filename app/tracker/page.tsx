@@ -68,11 +68,17 @@ interface Entry {
   id: string
   date: string
   startPoint: string // Changed from start_point
+  startPostcode?: string
   stop1?: string
+  stop1Postcode?: string
   stop2?: string
+  stop2Postcode?: string
   stop3?: string
+  stop3Postcode?: string
   stop4?: string
+  stop4Postcode?: string
   finishPoint: string // Changed from finish_point
+  finishPostcode?: string
   clientsVisited?: string // Changed from clients_visited
   description?: string
   totalMiles: string // Changed from total_miles
@@ -81,18 +87,27 @@ interface Entry {
   totalClaim: string
   totalCharge: string
   comments?: string
+  status?: EntryStatus
   createdat: string // Changed from created_at to match database column
 }
+
+type EntryStatus = "draft" | "submitted" | "paid"
 
 interface QuickTripDraft {
   trip: {
     date: string
     startPoint: string
+    startPostcode?: string
     stop1: string
+    stop1Postcode?: string
     stop2: string
+    stop2Postcode?: string
     stop3: string
+    stop3Postcode?: string
     stop4: string
+    stop4Postcode?: string
     finishPoint: string
+    finishPostcode?: string
     clientsVisited: string
     description: string
   }
@@ -126,8 +141,93 @@ interface QuickTripErrorResponse {
 const DEFAULT_CLAIM_RATE = "0.14"
 const DEFAULT_CHARGE_RATE = "0.25"
 const DEFAULT_CURRENCY = "GBP"
+const DEFAULT_ENTRY_STATUS: EntryStatus = "draft"
 const QUICK_ADD_TEMPORARY_AI_MESSAGE =
   "AI trip parsing is temporarily unavailable. Please try again in a moment."
+
+const ENTRY_STATUS_OPTIONS: Array<{ value: EntryStatus; label: string }> = [
+  { value: "draft", label: "Draft" },
+  { value: "submitted", label: "Submitted" },
+  { value: "paid", label: "Paid" },
+]
+
+const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
+  draft: "bg-slate-100 text-slate-700 border-slate-200",
+  submitted: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
+}
+
+const normalizeLocationName = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "")
+const normalizePostcode = (value: string | undefined) => (value || "").trim().toUpperCase()
+
+const normalizeEntry = (entry: any): Entry => ({
+  ...entry,
+  startPostcode: normalizePostcode(entry.startPostcode ?? entry.start_postcode),
+  stop1Postcode: normalizePostcode(entry.stop1Postcode ?? entry.stop1_postcode),
+  stop2Postcode: normalizePostcode(entry.stop2Postcode ?? entry.stop2_postcode),
+  stop3Postcode: normalizePostcode(entry.stop3Postcode ?? entry.stop3_postcode),
+  stop4Postcode: normalizePostcode(entry.stop4Postcode ?? entry.stop4_postcode),
+  finishPostcode: normalizePostcode(entry.finishPostcode ?? entry.finish_postcode),
+  status: (entry.status || DEFAULT_ENTRY_STATUS) as EntryStatus,
+})
+
+const entryToDatabasePayload = (entry: Partial<Entry>) => {
+  const {
+    startPostcode,
+    stop1Postcode,
+    stop2Postcode,
+    stop3Postcode,
+    stop4Postcode,
+    finishPostcode,
+    ...rest
+  } = entry
+
+  const payload: Record<string, unknown> = {
+    ...rest,
+  }
+
+  if ("startPostcode" in entry) payload.start_postcode = normalizePostcode(startPostcode) || null
+  if ("stop1Postcode" in entry) payload.stop1_postcode = normalizePostcode(stop1Postcode) || null
+  if ("stop2Postcode" in entry) payload.stop2_postcode = normalizePostcode(stop2Postcode) || null
+  if ("stop3Postcode" in entry) payload.stop3_postcode = normalizePostcode(stop3Postcode) || null
+  if ("stop4Postcode" in entry) payload.stop4_postcode = normalizePostcode(stop4Postcode) || null
+  if ("finishPostcode" in entry) payload.finish_postcode = normalizePostcode(finishPostcode) || null
+  if ("status" in entry) payload.status = entry.status || DEFAULT_ENTRY_STATUS
+
+  return payload
+}
+
+const escapeCsvValue = (value: string | number | undefined) => {
+  const text = String(value ?? "")
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`
+  }
+  return text
+}
+
+const getMonthLabel = (monthKey: string) => {
+  const parsed = new Date(`${monthKey}-01T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return monthKey
+  return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(parsed)
+}
+
+const shiftMonth = (monthKey: string, offset: number) => {
+  const parsed = new Date(`${monthKey}-01T00:00:00`)
+  parsed.setMonth(parsed.getMonth() + offset)
+  return parsed.toISOString().slice(0, 7)
+}
+
+const getEntryRoutePostcodes = (entry: Entry) => [
+  { point: entry.startPoint, postcode: entry.startPostcode },
+  { point: entry.stop1, postcode: entry.stop1Postcode },
+  { point: entry.stop2, postcode: entry.stop2Postcode },
+  { point: entry.stop3, postcode: entry.stop3Postcode },
+  { point: entry.stop4, postcode: entry.stop4Postcode },
+  { point: entry.finishPoint, postcode: entry.finishPostcode },
+]
+
+const getMissingPostcodeCount = (entry: Entry) =>
+  getEntryRoutePostcodes(entry).filter((item) => item.point && !item.postcode?.trim()).length
 
 const getTodayLocalDate = () => {
   const now = new Date()
@@ -329,7 +429,7 @@ export default function MileageTrackerPage() {
       console.log("[v0] Entries fetched:", entriesRes.data?.length || 0)
       if (locationsRes.data) setLocations(locationsRes.data)
       if (routesRes.data) setSavedRoutes(routesRes.data)
-      if (entriesRes.data) setEntries(entriesRes.data)
+      if (entriesRes.data) setEntries(entriesRes.data.map(normalizeEntry))
 
       setIsLoading(false)
     }
@@ -371,14 +471,14 @@ export default function MileageTrackerPage() {
         if (payload.eventType === "INSERT") {
           setEntries((prev) => {
             if (prev.some((entry) => entry.id === payload.new.id)) return prev
-            const newEntry = payload.new as Entry
+            const newEntry = normalizeEntry(payload.new)
             console.log("[v0] Adding entry to list:", newEntry.id, newEntry.date)
             return [newEntry, ...prev]
           })
         } else if (payload.eventType === "DELETE") {
           setEntries((prev) => prev.filter((entry) => entry.id !== payload.old.id))
         } else if (payload.eventType === "UPDATE") {
-          setEntries((prev) => prev.map((entry) => (entry.id === payload.new.id ? (payload.new as Entry) : entry)))
+          setEntries((prev) => prev.map((entry) => (entry.id === payload.new.id ? normalizeEntry(payload.new) : entry)))
         }
       })
       .subscribe((status) => {
@@ -413,7 +513,7 @@ export default function MileageTrackerPage() {
 
           if (locationsRes.data) setLocations(locationsRes.data)
           if (routesRes.data) setSavedRoutes(routesRes.data)
-          if (entriesRes.data) setEntries(entriesRes.data)
+          if (entriesRes.data) setEntries(entriesRes.data.map(normalizeEntry))
         }
       }
       setHasCheckedSeed(true)
@@ -485,7 +585,7 @@ export default function MileageTrackerPage() {
     console.log("[v0] User ID:", user?.id)
 
     const dataToInsert = {
-      ...entry,
+      ...entryToDatabasePayload(entry),
       userid: user!.id,
     }
     console.log("[v0] Data to insert:", dataToInsert)
@@ -510,7 +610,7 @@ export default function MileageTrackerPage() {
 
       if (freshEntries) {
         console.log("[v0] Manually updating entries after insert:", freshEntries.length)
-        setEntries(freshEntries)
+        setEntries(freshEntries.map(normalizeEntry))
       }
     }
   }
@@ -519,7 +619,7 @@ export default function MileageTrackerPage() {
   const handleUpdateEntry = async (id: string, updatedData: Partial<Entry>) => {
     const { error } = await supabase
       .from("mt_entries")
-      .update({ ...updatedData, updatedat: new Date().toISOString() })
+      .update({ ...entryToDatabasePayload(updatedData), updatedat: new Date().toISOString() })
       .eq("id", id)
     if (error) throw error
   }
@@ -542,7 +642,7 @@ export default function MileageTrackerPage() {
           .order("date", { ascending: false })
           .order("createdat", { ascending: false })
         if (freshEntries) {
-          setEntries(freshEntries)
+          setEntries(freshEntries.map(normalizeEntry))
         }
         throw new Error(error.message)
       }
@@ -555,7 +655,7 @@ export default function MileageTrackerPage() {
         .order("date", { ascending: false })
         .order("createdat", { ascending: false })
       if (freshEntries) {
-        setEntries(freshEntries)
+        setEntries(freshEntries.map(normalizeEntry))
       }
       throw new Error(err instanceof Error ? err.message : "Failed to delete entry. Please try again.")
     }
@@ -583,7 +683,7 @@ export default function MileageTrackerPage() {
           .order("date", { ascending: false })
           .order("createdat", { ascending: false })
         if (freshEntries) {
-          setEntries(freshEntries)
+          setEntries(freshEntries.map(normalizeEntry))
         }
         throw new Error(error.message)
       }
@@ -597,7 +697,7 @@ export default function MileageTrackerPage() {
         .order("date", { ascending: false })
         .order("createdat", { ascending: false })
       if (freshEntries) {
-        setEntries(freshEntries)
+        setEntries(freshEntries.map(normalizeEntry))
       }
       throw new Error(err instanceof Error ? err.message : "Failed to delete all entries. Please try again.")
     }
@@ -611,22 +711,28 @@ export default function MileageTrackerPage() {
       .order("createdat", { ascending: false })
 
     if (data) {
-      setEntries(data)
+      setEntries(data.map(normalizeEntry))
       console.log("[v0] Manually refreshed entries:", data.length)
     }
   }
 
   // --- Import sample data ---
 
-  const exportToCSV = () => {
+  const exportToCSV = (entriesToExport = entries, label = getTodayLocalDate()) => {
     const headers = [
       "Date",
       "Starting Point",
+      "Starting Postcode",
       "1st Stop",
+      "1st Stop Postcode",
       "2nd Stop",
+      "2nd Stop Postcode",
       "3rd Stop",
+      "3rd Stop Postcode",
       "4th Stop",
+      "4th Stop Postcode",
       "Finish Point",
+      "Finish Postcode",
       "Clients Visited",
       "Description",
       "Total Miles",
@@ -634,31 +740,39 @@ export default function MileageTrackerPage() {
       "Claim Value",
       "Charge Rate",
       "Charge Value",
+      "Status",
       "Comments",
     ]
-    const rows = entries.map((e) => [
+    const rows = entriesToExport.map((e) => [
       e.date,
       e.startPoint, // Changed from e.start_point
+      e.startPostcode || "",
       e.stop1 || "",
+      e.stop1Postcode || "",
       e.stop2 || "",
+      e.stop2Postcode || "",
       e.stop3 || "",
+      e.stop3Postcode || "",
       e.stop4 || "",
+      e.stop4Postcode || "",
       e.finishPoint, // Changed from e.finish_point
-      `"${e.clientsVisited || ""}"`, // Changed from e.clients_visited
-      `"${e.description || ""}"`,
+      e.finishPostcode || "",
+      e.clientsVisited || "", // Changed from e.clients_visited
+      e.description || "",
       e.totalMiles, // Changed from e.total_miles
       e.claimRate, // Changed from e.claim_rate
       e.totalClaim,
       e.chargeRate, // Changed from e.charge_rate
       e.totalCharge,
-      `"${e.comments || ""}"`,
+      e.status || DEFAULT_ENTRY_STATUS,
+      e.comments || "",
     ])
-    const csvContent = [headers.join(","), ...rows.map((row) => row.join(","))].join("\n")
+    const csvContent = [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n")
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
     const link = document.createElement("a")
     const url = URL.createObjectURL(blob)
     link.setAttribute("href", url)
-    link.setAttribute("download", `mileage_tracker_export_${getTodayLocalDate()}.csv`)
+    link.setAttribute("download", `mileage_tracker_export_${label}.csv`)
     link.style.visibility = "hidden"
     document.body.appendChild(link)
     link.click()
@@ -720,12 +834,18 @@ export default function MileageTrackerPage() {
             </div>
 
             <div className="mt-3">
-              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+              <div className="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto">
                 <button
                   onClick={() => setActiveTab("tracker")}
                   className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "tracker" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
                 >
                   My Trips
+                </button>
+                <button
+                  onClick={() => setActiveTab("vehicle")}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === "vehicle" ? "bg-white text-indigo-900 shadow-sm" : "text-indigo-200 hover:bg-white/10"}`}
+                >
+                  Vehicle
                 </button>
                 <button
                   onClick={() => setActiveTab("locations")}
@@ -760,6 +880,8 @@ export default function MileageTrackerPage() {
             onRefresh={handleRefreshEntries}
             onOpenLocationsTab={() => setActiveTab("locations")}
           />
+        ) : activeTab === "vehicle" ? (
+          <VehicleMileageView user={user} entries={entries} />
         ) : (
           <LocationsView
             user={user}
@@ -777,6 +899,173 @@ export default function MileageTrackerPage() {
       <div className="max-w-7xl mx-auto px-4 py-4 text-center text-xs text-slate-400">
         User ID: <span className="font-mono">{user?.id?.slice(0, 8) || "..."}</span>
       </div>
+    </div>
+  )
+}
+
+// --- Vehicle Mileage View ---
+const VehicleMileageView = ({ user, entries }: { user: { id: string } | null; entries: Entry[] }) => {
+  const [selectedMonth, setSelectedMonth] = useState(getTodayLocalDate().slice(0, 7))
+  const [monthlyStartMileage, setMonthlyStartMileage] = useState("")
+  const [currentMileage, setCurrentMileage] = useState("")
+  const [monthlyVehicleCost, setMonthlyVehicleCost] = useState("")
+  const locale = useMemo(() => (typeof navigator !== "undefined" ? navigator.language : "en-GB"), [])
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(locale, {
+        style: "currency",
+        currency: DEFAULT_CURRENCY,
+        maximumFractionDigits: 2,
+      }),
+    [locale],
+  )
+  const formatCurrency = (value: number | string) => {
+    const parsed = typeof value === "number" ? value : Number.parseFloat(value || "0")
+    return currencyFormatter.format(Number.isNaN(parsed) ? 0 : parsed)
+  }
+
+  const monthEntries = useMemo(
+    () => entries.filter((entry) => entry.date?.startsWith(selectedMonth)),
+    [entries, selectedMonth],
+  )
+  const monthlyBusinessMiles = useMemo(
+    () => monthEntries.reduce((acc, entry) => acc + (Number.parseFloat(entry.totalMiles) || 0), 0),
+    [monthEntries],
+  )
+  const monthlyClaimable = useMemo(
+    () => monthEntries.reduce((acc, entry) => acc + (Number.parseFloat(entry.totalClaim) || 0), 0),
+    [monthEntries],
+  )
+  const totalVehicleMiles = Math.max(0, (Number.parseFloat(currentMileage) || 0) - (Number.parseFloat(monthlyStartMileage) || 0))
+  const personalMiles = Math.max(0, totalVehicleMiles - monthlyBusinessMiles)
+  const businessCostShare =
+    totalVehicleMiles > 0 ? ((Number.parseFloat(monthlyVehicleCost) || 0) * monthlyBusinessMiles) / totalVehicleMiles : 0
+  const claimVsBusinessCost = monthlyClaimable - businessCostShare
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return
+    const raw = window.localStorage.getItem(`mileage-insights:${user.id}:${selectedMonth}`)
+    if (!raw) {
+      setMonthlyStartMileage("")
+      setCurrentMileage("")
+      setMonthlyVehicleCost("")
+      return
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as {
+        monthlyStartMileage?: string
+        currentMileage?: string
+        monthlyVehicleCost?: string
+      }
+      setMonthlyStartMileage(parsed.monthlyStartMileage || "")
+      setCurrentMileage(parsed.currentMileage || "")
+      setMonthlyVehicleCost(parsed.monthlyVehicleCost || "")
+    } catch {
+      setMonthlyStartMileage("")
+      setCurrentMileage("")
+      setMonthlyVehicleCost("")
+    }
+  }, [user?.id, selectedMonth])
+
+  useEffect(() => {
+    if (!user?.id || typeof window === "undefined") return
+    window.localStorage.setItem(
+      `mileage-insights:${user.id}:${selectedMonth}`,
+      JSON.stringify({ monthlyStartMileage, currentMileage, monthlyVehicleCost }),
+    )
+  }, [user?.id, selectedMonth, monthlyStartMileage, currentMileage, monthlyVehicleCost])
+
+  return (
+    <div className="space-y-4 sm:space-y-6">
+      <div className="overflow-hidden rounded-3xl border border-indigo-100 bg-gradient-to-br from-indigo-900 via-indigo-800 to-slate-900 p-5 text-white shadow-xl shadow-indigo-100">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
+              <Car className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200">Vehicle Cost Check</p>
+              <h2 className="text-2xl font-bold">{getMonthLabel(selectedMonth)}</h2>
+              <p className="text-sm text-indigo-100">Compare total odometer miles against your claim miles.</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, -1))} className="border-white/20 bg-white/10 text-white hover:bg-white/20">
+              Prev
+            </Button>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(event) => setSelectedMonth(event.target.value)}
+              className="min-h-[44px] rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-sm font-semibold text-white [color-scheme:dark]"
+            />
+            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, 1))} className="border-white/20 bg-white/10 text-white hover:bg-white/20">
+              Next
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
+            <p className="text-[11px] font-semibold uppercase text-indigo-200">Business Miles</p>
+            <p className="mt-1 text-2xl font-bold">{monthlyBusinessMiles.toFixed(1)}</p>
+          </div>
+          <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
+            <p className="text-[11px] font-semibold uppercase text-indigo-200">Claim Value</p>
+            <p className="mt-1 text-2xl font-bold text-emerald-200">{formatCurrency(monthlyClaimable)}</p>
+          </div>
+          <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
+            <p className="text-[11px] font-semibold uppercase text-indigo-200">Trips</p>
+            <p className="mt-1 text-2xl font-bold">{monthEntries.length}</p>
+          </div>
+          <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
+            <p className="text-[11px] font-semibold uppercase text-indigo-200">Personal Miles</p>
+            <p className="mt-1 text-2xl font-bold text-amber-200">{personalMiles.toFixed(1)}</p>
+          </div>
+        </div>
+      </div>
+
+      <Card className="p-4 sm:p-6 space-y-5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Input
+            label="Month Start Odometer"
+            type="number"
+            value={monthlyStartMileage}
+            onChange={(e) => setMonthlyStartMileage(e.target.value)}
+            placeholder="e.g. 42100"
+          />
+          <Input
+            label="Current Odometer"
+            type="number"
+            value={currentMileage}
+            onChange={(e) => setCurrentMileage(e.target.value)}
+            placeholder="e.g. 42640"
+          />
+          <Input
+            label="Monthly Vehicle Cost (£)"
+            type="number"
+            value={monthlyVehicleCost}
+            onChange={(e) => setMonthlyVehicleCost(e.target.value)}
+            placeholder="e.g. 400"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {[
+            ["Total Vehicle Miles", totalVehicleMiles.toFixed(1), "text-slate-800"],
+            ["Business Miles", monthlyBusinessMiles.toFixed(1), "text-indigo-700"],
+            ["Personal Miles", personalMiles.toFixed(1), "text-amber-600"],
+            ["Business Cost Share", formatCurrency(businessCostShare), "text-slate-800"],
+            ["Claim vs Cost", formatCurrency(claimVsBusinessCost), claimVsBusinessCost >= 0 ? "text-emerald-600" : "text-red-600"],
+          ].map(([label, value, colour]) => (
+            <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className={`mt-1 text-xl font-black ${colour}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   )
 }
@@ -803,7 +1092,7 @@ const TrackerView = ({
   onUpdateEntry: (id: string, data: Partial<Entry>) => Promise<void>
   onDeleteEntry: (id: string) => Promise<void>
   onDeleteAll: () => Promise<void>
-  onExport: () => void
+  onExport: (entriesToExport?: Entry[], label?: string) => void
   onRefresh: () => Promise<void>
   onOpenLocationsTab: () => void
 }) => {
@@ -825,9 +1114,11 @@ const TrackerView = ({
   const [draftAdhocNames, setDraftAdhocNames] = useState<string[]>([])
   const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
   const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
-  const [monthlyStartMileage, setMonthlyStartMileage] = useState("")
-  const [currentMileage, setCurrentMileage] = useState("")
-  const [monthlyVehicleCost, setMonthlyVehicleCost] = useState("")
+  const [selectedMonth, setSelectedMonth] = useState(getTodayLocalDate().slice(0, 7))
+  const [statusFilter, setStatusFilter] = useState<EntryStatus | "all">("all")
+  const [isExportPreviewOpen, setIsExportPreviewOpen] = useState(false)
+  const [defaultClaimRate, setDefaultClaimRate] = useState(DEFAULT_CLAIM_RATE)
+  const [defaultChargeRate, setDefaultChargeRate] = useState(DEFAULT_CHARGE_RATE)
   const previousEntryIdsRef = useRef<Set<string>>(new Set())
   const locale = useMemo(() => (typeof navigator !== "undefined" ? navigator.language : "en-GB"), [])
   const dateFormatter = useMemo(
@@ -857,11 +1148,18 @@ const TrackerView = ({
     stop3: "",
     stop4: "",
     finishPoint: "",
+    startPostcode: "",
+    stop1Postcode: "",
+    stop2Postcode: "",
+    stop3Postcode: "",
+    stop4Postcode: "",
+    finishPostcode: "",
     clientsVisited: "",
     description: "",
     totalMiles: "",
     claimRate: DEFAULT_CLAIM_RATE,
     chargeRate: DEFAULT_CHARGE_RATE,
+    status: DEFAULT_ENTRY_STATUS,
   })
 
   const [legDistances, setLegDistances] = useState<Record<string, string>>({})
@@ -875,11 +1173,18 @@ const TrackerView = ({
       stop3: "",
       stop4: "",
       finishPoint: "",
+      startPostcode: "",
+      stop1Postcode: "",
+      stop2Postcode: "",
+      stop3Postcode: "",
+      stop4Postcode: "",
+      finishPostcode: "",
       clientsVisited: "",
       description: "",
       totalMiles: "",
-      claimRate: DEFAULT_CLAIM_RATE,
-      chargeRate: DEFAULT_CHARGE_RATE,
+      claimRate: defaultClaimRate,
+      chargeRate: defaultChargeRate,
+      status: DEFAULT_ENTRY_STATUS,
     })
     setLegDistances({})
     setDraftAdhocNames([])
@@ -897,13 +1202,73 @@ const TrackerView = ({
       stop3: entry.stop3 || "",
       stop4: entry.stop4 || "",
       finishPoint: entry.finishPoint,
+      startPostcode: entry.startPostcode || "",
+      stop1Postcode: entry.stop1Postcode || "",
+      stop2Postcode: entry.stop2Postcode || "",
+      stop3Postcode: entry.stop3Postcode || "",
+      stop4Postcode: entry.stop4Postcode || "",
+      finishPostcode: entry.finishPostcode || "",
       clientsVisited: entry.clientsVisited || "",
       description: entry.description || "",
       totalMiles: entry.totalMiles,
       claimRate: entry.claimRate || DEFAULT_CLAIM_RATE,
       chargeRate: entry.chargeRate || DEFAULT_CHARGE_RATE,
+      status: entry.status || DEFAULT_ENTRY_STATUS,
     })
     setEditingId(entry.id)
+    setIsFormOpen(true)
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  const locationByName = useMemo(
+    () => new Map(locations.map((location) => [normalizeLocationName(location.name), location])),
+    [locations],
+  )
+  const getPostcodeForLocation = (name: string) =>
+    normalizePostcode(locationByName.get(normalizeLocationName(name))?.postcode)
+  const updateRoutePoint = (
+    pointField: "startPoint" | "stop1" | "stop2" | "stop3" | "stop4" | "finishPoint",
+    postcodeField:
+      | "startPostcode"
+      | "stop1Postcode"
+      | "stop2Postcode"
+      | "stop3Postcode"
+      | "stop4Postcode"
+      | "finishPostcode",
+    value: string,
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      [pointField]: value,
+      [postcodeField]: getPostcodeForLocation(value),
+    }))
+  }
+
+  const duplicateEntry = (entry: Entry) => {
+    setMobileDetailsEntryId(null)
+    setFormData({
+      date: getTodayLocalDate(),
+      startPoint: entry.startPoint,
+      stop1: entry.stop1 || "",
+      stop2: entry.stop2 || "",
+      stop3: entry.stop3 || "",
+      stop4: entry.stop4 || "",
+      finishPoint: entry.finishPoint,
+      startPostcode: entry.startPostcode || getPostcodeForLocation(entry.startPoint),
+      stop1Postcode: entry.stop1Postcode || getPostcodeForLocation(entry.stop1 || ""),
+      stop2Postcode: entry.stop2Postcode || getPostcodeForLocation(entry.stop2 || ""),
+      stop3Postcode: entry.stop3Postcode || getPostcodeForLocation(entry.stop3 || ""),
+      stop4Postcode: entry.stop4Postcode || getPostcodeForLocation(entry.stop4 || ""),
+      finishPostcode: entry.finishPostcode || getPostcodeForLocation(entry.finishPoint),
+      clientsVisited: entry.clientsVisited || "",
+      description: entry.description || "",
+      totalMiles: entry.totalMiles,
+      claimRate: defaultClaimRate,
+      chargeRate: defaultChargeRate,
+      status: DEFAULT_ENTRY_STATUS,
+    })
+    setLegDistances({})
+    setEditingId(null)
     setIsFormOpen(true)
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
@@ -1010,9 +1375,17 @@ const TrackerView = ({
     () => entries.find((entry) => entry.id === mobileDetailsEntryId) || null,
     [entries, mobileDetailsEntryId],
   )
+  const monthEntries = useMemo(
+    () => entries.filter((entry) => entry.date?.startsWith(selectedMonth)),
+    [entries, selectedMonth],
+  )
+  const filteredEntries = useMemo(
+    () => monthEntries.filter((entry) => statusFilter === "all" || (entry.status || DEFAULT_ENTRY_STATUS) === statusFilter),
+    [monthEntries, statusFilter],
+  )
   const totals = useMemo(
     () =>
-      entries.reduce(
+      monthEntries.reduce(
         (acc, curr) => {
           acc.miles += Number.parseFloat(curr.totalMiles) || 0
           acc.claim += Number.parseFloat(curr.totalClaim) || 0
@@ -1021,57 +1394,49 @@ const TrackerView = ({
         },
         { miles: 0, claim: 0, charge: 0 },
       ),
-    [entries],
+    [monthEntries],
   )
-  const currentMonthKey = useMemo(() => getTodayLocalDate().slice(0, 7), [])
-  const monthlyBusinessMiles = useMemo(
-    () =>
-      entries.reduce((acc, entry) => {
-        if (!entry.date.startsWith(currentMonthKey)) return acc
-        return acc + (Number.parseFloat(entry.totalMiles) || 0)
-      }, 0),
-    [entries, currentMonthKey],
+  const missingPostcodeTrips = useMemo(
+    () => monthEntries.filter((entry) => getMissingPostcodeCount(entry) > 0).length,
+    [monthEntries],
   )
-  const monthlyClaimable = useMemo(
-    () =>
-      entries.reduce((acc, entry) => {
-        if (!entry.date.startsWith(currentMonthKey)) return acc
-        return acc + (Number.parseFloat(entry.totalClaim) || 0)
-      }, 0),
-    [entries, currentMonthKey],
-  )
-  const totalVehicleMiles = Math.max(0, (Number.parseFloat(currentMileage) || 0) - (Number.parseFloat(monthlyStartMileage) || 0))
-  const personalMiles = Math.max(0, totalVehicleMiles - monthlyBusinessMiles)
-  const businessCostShare =
-    totalVehicleMiles > 0 ? ((Number.parseFloat(monthlyVehicleCost) || 0) * monthlyBusinessMiles) / totalVehicleMiles : 0
-  const claimVsBusinessCost = monthlyClaimable - businessCostShare
+  const recentTemplates = useMemo(() => {
+    const seen = new Set<string>()
+    return monthEntries
+      .filter((entry) => entry.startPoint && entry.finishPoint)
+      .filter((entry) => {
+        const key = [entry.startPoint, entry.stop1, entry.stop2, entry.stop3, entry.stop4, entry.finishPoint].filter(Boolean).join("|")
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 4)
+  }, [monthEntries])
 
   useEffect(() => {
     if (!user?.id || typeof window === "undefined") return
-    const raw = window.localStorage.getItem(`mileage-insights:${user.id}`)
+    const raw = window.localStorage.getItem(`mileage-settings:${user.id}`)
     if (!raw) return
 
     try {
       const parsed = JSON.parse(raw) as {
-        monthlyStartMileage?: string
-        currentMileage?: string
-        monthlyVehicleCost?: string
+        defaultClaimRate?: string
+        defaultChargeRate?: string
       }
-      setMonthlyStartMileage(parsed.monthlyStartMileage || "")
-      setCurrentMileage(parsed.currentMileage || "")
-      setMonthlyVehicleCost(parsed.monthlyVehicleCost || "")
+      if (parsed.defaultClaimRate) setDefaultClaimRate(parsed.defaultClaimRate)
+      if (parsed.defaultChargeRate) setDefaultChargeRate(parsed.defaultChargeRate)
     } catch {
-      // Ignore malformed localStorage and use default empty values.
+      // Ignore malformed localStorage and keep built-in defaults.
     }
   }, [user?.id])
 
   useEffect(() => {
     if (!user?.id || typeof window === "undefined") return
     window.localStorage.setItem(
-      `mileage-insights:${user.id}`,
-      JSON.stringify({ monthlyStartMileage, currentMileage, monthlyVehicleCost }),
+      `mileage-settings:${user.id}`,
+      JSON.stringify({ defaultClaimRate, defaultChargeRate }),
     )
-  }, [user?.id, monthlyStartMileage, currentMileage, monthlyVehicleCost])
+  }, [user?.id, defaultClaimRate, defaultChargeRate])
 
   useEffect(() => {
     const currentIds = new Set(entries.map((entry) => entry.id))
@@ -1336,11 +1701,18 @@ const TrackerView = ({
       stop3: trip.stop3 || "",
       stop4: trip.stop4 || "",
       finishPoint: trip.finishPoint || "",
+      startPostcode: trip.startPostcode || getPostcodeForLocation(trip.startPoint || ""),
+      stop1Postcode: trip.stop1Postcode || getPostcodeForLocation(trip.stop1 || ""),
+      stop2Postcode: trip.stop2Postcode || getPostcodeForLocation(trip.stop2 || ""),
+      stop3Postcode: trip.stop3Postcode || getPostcodeForLocation(trip.stop3 || ""),
+      stop4Postcode: trip.stop4Postcode || getPostcodeForLocation(trip.stop4 || ""),
+      finishPostcode: trip.finishPostcode || getPostcodeForLocation(trip.finishPoint || ""),
       clientsVisited: trip.clientsVisited || "",
       description: trip.description || "",
       totalMiles: quickDraft.distance.totalMiles || "",
-      claimRate: DEFAULT_CLAIM_RATE,
-      chargeRate: DEFAULT_CHARGE_RATE,
+      claimRate: defaultClaimRate,
+      chargeRate: defaultChargeRate,
+      status: DEFAULT_ENTRY_STATUS,
     })
     setLegDistances(mapLegDistancesToFormIds(trip, quickDraft.distance.legs))
     setEditingId(null)
@@ -1362,8 +1734,8 @@ const TrackerView = ({
       return
     }
 
-    const claimRate = DEFAULT_CLAIM_RATE
-    const chargeRate = DEFAULT_CHARGE_RATE
+    const claimRate = defaultClaimRate
+    const chargeRate = defaultChargeRate
     const totalClaim = (Number.parseFloat(totalMiles) * Number.parseFloat(claimRate)).toFixed(2)
     const totalCharge = (Number.parseFloat(totalMiles) * Number.parseFloat(chargeRate)).toFixed(2)
 
@@ -1376,6 +1748,12 @@ const TrackerView = ({
         stop3: trip.stop3 || "",
         stop4: trip.stop4 || "",
         finishPoint: trip.finishPoint,
+        startPostcode: trip.startPostcode || getPostcodeForLocation(trip.startPoint),
+        stop1Postcode: trip.stop1Postcode || getPostcodeForLocation(trip.stop1 || ""),
+        stop2Postcode: trip.stop2Postcode || getPostcodeForLocation(trip.stop2 || ""),
+        stop3Postcode: trip.stop3Postcode || getPostcodeForLocation(trip.stop3 || ""),
+        stop4Postcode: trip.stop4Postcode || getPostcodeForLocation(trip.stop4 || ""),
+        finishPostcode: trip.finishPostcode || getPostcodeForLocation(trip.finishPoint),
         clientsVisited: trip.clientsVisited || "",
         description: trip.description || "",
         totalMiles,
@@ -1383,6 +1761,7 @@ const TrackerView = ({
         chargeRate,
         totalClaim,
         totalCharge,
+        status: DEFAULT_ENTRY_STATUS,
       })
       setQuickDraft(null)
       setQuickAddText("")
@@ -1400,7 +1779,7 @@ const TrackerView = ({
   }
 
   const locationOptions = useMemo(() => {
-    const savedOpts = locations.map((l) => ({ value: l.name, label: l.name }))
+    const savedOpts = locations.map((l) => ({ value: l.name, label: l.postcode ? `${l.name} - ${l.postcode}` : l.name }))
     const savedNames = new Set(locations.map((l) => l.name))
     const adhocOpts = draftAdhocNames
       .filter((name) => !savedNames.has(name))
@@ -1408,89 +1787,145 @@ const TrackerView = ({
     return [...savedOpts, ...adhocOpts]
   }, [locations, draftAdhocNames])
 
+  const getEntryRouteLegs = (entry: Entry) => {
+    const route = [entry.startPoint, entry.stop1, entry.stop2, entry.stop3, entry.stop4, entry.finishPoint].filter(Boolean)
+    return route.slice(0, -1).map((from, index) => ({ from, to: route[index + 1] }))
+  }
+
+  const usesOnlySavedRoutes = (entry: Entry) => {
+    const routeLegs = getEntryRouteLegs(entry)
+    if (routeLegs.length === 0) return false
+    return routeLegs.every((leg) =>
+      savedRoutes.some(
+        (route) =>
+          (route.from === leg.from && route.to === leg.to) ||
+          (route.from === leg.to && route.to === leg.from),
+      ),
+    )
+  }
+
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 md:pb-0">
-      {/* Stats Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 md:gap-4">
-        <Card className="p-3 sm:p-4 flex items-center justify-between bg-white">
+      <Card className="border-indigo-100 bg-gradient-to-br from-white to-indigo-50/50 p-4 sm:p-5 md:p-6 space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-slate-500 text-xs sm:text-sm font-medium">Total Miles</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-500">Claim Mode</p>
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">{getMonthLabel(selectedMonth)}</h2>
+            <p className="text-sm text-slate-500">Everything below is filtered to this claim month and status.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, -1))}>
+              Previous
+            </Button>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(event) => setSelectedMonth(event.target.value)}
+              className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+            />
+            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, 1))}>
+              Next
+            </Button>
+          </div>
+        </div>
+        <div className="xl:hidden rounded-3xl bg-indigo-900 p-4 text-white shadow-lg shadow-indigo-100">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-200">Monthly Claim</p>
+              <p className="mt-1 text-2xl font-black">{getMonthLabel(selectedMonth)}</p>
+              <p className="mt-1 text-sm text-indigo-100">
+                {monthEntries.length} trips · {totals.miles.toFixed(1)} miles
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white/10 px-3 py-2 text-right ring-1 ring-white/10">
+              <p className="text-[11px] font-semibold text-indigo-200">Claim</p>
+              <p className="text-lg font-black text-emerald-200">{formatCurrency(totals.claim)}</p>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="rounded-2xl bg-white/10 px-3 py-2 ring-1 ring-white/10">
+              <p className="text-[11px] font-semibold text-indigo-200">Missing postcodes</p>
+              <p className="text-lg font-black">{missingPostcodeTrips}</p>
+            </div>
+            <div className="rounded-2xl bg-white/10 px-3 py-2 ring-1 ring-white/10">
+              <p className="text-[11px] font-semibold text-indigo-200">Filter</p>
+              <p className="text-lg font-black capitalize">{statusFilter === "all" ? "All" : statusFilter}</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${statusFilter === "all" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-500"}`}
+          >
+            All
+          </button>
+          {ENTRY_STATUS_OPTIONS.map((status) => (
+            <button
+              key={status.value}
+              type="button"
+              onClick={() => setStatusFilter(status.value)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${statusFilter === status.value ? ENTRY_STATUS_CLASSES[status.value] : "border-slate-200 bg-white text-slate-500"}`}
+            >
+              {status.label}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Stats Bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
+        <Card className="p-4 flex items-center justify-between bg-white">
+          <div>
+            <p className="text-slate-500 text-xs sm:text-sm font-medium">{getMonthLabel(selectedMonth)} Miles</p>
             <p className="text-xl sm:text-2xl md:text-3xl font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
           </div>
           <Navigation className="w-7 h-7 sm:w-8 sm:h-8 text-indigo-500 opacity-20" />
         </Card>
-        <Card className="p-3 sm:p-4 flex items-center justify-between bg-white border-emerald-200 border-l-4">
+        <Card className="p-4 flex items-center justify-between bg-white border-emerald-200 border-l-4">
           <div>
-            <p className="text-emerald-700 text-xs sm:text-sm font-medium">Total Claimable</p>
+            <p className="text-emerald-700 text-xs sm:text-sm font-medium">Claim Value</p>
             <p className="text-xl sm:text-2xl md:text-3xl font-bold text-emerald-600">{formatCurrency(totals.claim)}</p>
           </div>
           <PoundSterling className="w-7 h-7 sm:w-8 sm:h-8 text-emerald-500 opacity-20" />
         </Card>
-        <Card className="col-span-2 sm:col-span-1 p-3 sm:p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
+        <Card className="p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
           <div>
-            <p className="text-blue-700 text-xs sm:text-sm font-medium">Total Chargeable</p>
-            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-600">{formatCurrency(totals.charge)}</p>
+            <p className="text-blue-700 text-xs sm:text-sm font-medium">Trips Logged</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-600">{monthEntries.length}</p>
           </div>
           <FileText className="w-7 h-7 sm:w-8 sm:h-8 text-blue-500 opacity-20" />
         </Card>
+        <Card className="p-4 flex items-center justify-between bg-white border-amber-200 border-l-4">
+          <div>
+            <p className="text-amber-700 text-xs sm:text-sm font-medium">Missing Postcodes</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-amber-600">{missingPostcodeTrips}</p>
+          </div>
+          <MapPin className="w-7 h-7 sm:w-8 sm:h-8 text-amber-500 opacity-20" />
+        </Card>
       </div>
 
-      <Card className="p-3 sm:p-4 md:p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Car className="w-5 h-5 text-indigo-600" />
-          <div>
-            <p className="text-sm font-semibold text-slate-800">Vehicle Mileage & Cost Check</p>
-            <p className="text-xs text-slate-500">Track personal miles and compare business claimable against your running costs.</p>
-          </div>
+      <Card className="p-3 sm:p-4 md:p-5 space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Default Rates</p>
+          <p className="text-xs text-slate-500">New trips and AI drafts use these rates. Existing trips keep their saved rates.</p>
         </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
-            label="Month Start Odometer"
+            label={`Default Claim Rate (${DEFAULT_CURRENCY})`}
             type="number"
-            value={monthlyStartMileage}
-            onChange={(e) => setMonthlyStartMileage(e.target.value)}
-            placeholder="e.g. 42100"
+            value={defaultClaimRate}
+            onChange={(e) => setDefaultClaimRate(e.target.value)}
+            placeholder="0.45"
           />
           <Input
-            label="Current Odometer"
+            label={`Default Charge Rate (${DEFAULT_CURRENCY})`}
             type="number"
-            value={currentMileage}
-            onChange={(e) => setCurrentMileage(e.target.value)}
-            placeholder="e.g. 42640"
+            value={defaultChargeRate}
+            onChange={(e) => setDefaultChargeRate(e.target.value)}
+            placeholder="0.25"
           />
-          <Input
-            label="Monthly Vehicle Cost (£)"
-            type="number"
-            value={monthlyVehicleCost}
-            onChange={(e) => setMonthlyVehicleCost(e.target.value)}
-            placeholder="e.g. 400"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total Vehicle Miles</p>
-            <p className="text-lg font-bold text-slate-800">{totalVehicleMiles.toFixed(1)}</p>
-          </div>
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Business Miles (Month)</p>
-            <p className="text-lg font-bold text-indigo-700">{monthlyBusinessMiles.toFixed(1)}</p>
-          </div>
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Personal Miles</p>
-            <p className="text-lg font-bold text-orange-600">{personalMiles.toFixed(1)}</p>
-          </div>
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Business Cost Share</p>
-            <p className="text-lg font-bold text-slate-800">{formatCurrency(businessCostShare)}</p>
-          </div>
-          <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Claimable vs Cost</p>
-            <p className={`text-lg font-bold ${claimVsBusinessCost >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-              {formatCurrency(claimVsBusinessCost)}
-            </p>
-          </div>
         </div>
       </Card>
 
@@ -1710,7 +2145,13 @@ const TrackerView = ({
 
       {/* Action Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-3">
-        <h2 className="text-base sm:text-lg font-bold text-slate-800">Recent Entries</h2>
+        <div>
+          <h2 className="text-base sm:text-lg font-bold text-slate-800">{getMonthLabel(selectedMonth)} Entries</h2>
+          <p className="text-xs text-slate-500">
+            Showing {filteredEntries.length} of {monthEntries.length} trips
+            {statusFilter !== "all" ? ` (${ENTRY_STATUS_OPTIONS.find((item) => item.value === statusFilter)?.label})` : ""}
+          </p>
+        </div>
         <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:flex-wrap sm:w-auto">
           <Button variant="secondary" onClick={onRefresh} className="w-full sm:w-auto">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1723,9 +2164,14 @@ const TrackerView = ({
             </svg>
             Refresh
           </Button>
-          <Button variant="secondary" onClick={onExport} className="hidden md:flex w-full sm:w-auto">
+          <Button
+            variant="secondary"
+            onClick={() => setIsExportPreviewOpen(true)}
+            className="hidden md:flex w-full sm:w-auto"
+            disabled={monthEntries.length === 0}
+          >
             <Download className="w-4 h-4" />
-            Export CSV
+            Export Month
           </Button>
           {entries.length > 0 && (
             <Button
@@ -1745,16 +2191,67 @@ const TrackerView = ({
         </div>
       </div>
 
-      <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.5rem)] z-40 rounded-2xl border border-slate-200 bg-white/95 shadow-lg backdrop-blur md:hidden">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 gap-2 px-2 py-2">
-          <Button variant="secondary" onClick={onExport} className="w-full">
-            <Download className="w-4 h-4" />
+      {recentTemplates.length > 0 && (
+        <Card className="p-3 sm:p-4 space-y-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Quick Templates</p>
+              <p className="text-xs text-slate-500">Duplicate a recent route and change the date/details.</p>
+            </div>
+            {entries[0] && (
+              <Button variant="secondary" onClick={() => duplicateEntry(entries[0])} className="w-full sm:w-auto">
+                Duplicate Last Trip
+              </Button>
+            )}
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {recentTemplates.map((entry) => (
+              <button
+                key={`template-${entry.id}`}
+                type="button"
+                onClick={() => duplicateEntry(entry)}
+                className="min-w-[220px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-xs hover:border-indigo-200 hover:bg-indigo-50"
+              >
+                <div className="font-semibold text-slate-700 truncate">
+                  {entry.startPoint} {"->"} {entry.finishPoint}
+                </div>
+                <div className="mt-1 text-slate-500">
+                  {Number.parseFloat(entry.totalMiles || "0").toFixed(1)} mi · {formatCurrency(entry.totalClaim)}
+                </div>
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.5rem)] z-40 rounded-3xl border border-slate-200 bg-white/95 shadow-2xl shadow-slate-300/40 backdrop-blur md:hidden">
+        <div className="mx-auto grid max-w-7xl grid-cols-3 gap-2 px-2 py-2">
+          <button
+            type="button"
+            onClick={() => setIsExportPreviewOpen(true)}
+            disabled={monthEntries.length === 0}
+            className="flex min-h-[56px] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 disabled:opacity-50"
+          >
+            <Download className="mb-0.5 h-4 w-4" />
             Export
-          </Button>
-          <Button onClick={openTripForm} disabled={!user} className="w-full">
-            <Plus className="w-4 h-4" />
-            New Trip
-          </Button>
+          </button>
+          <button
+            type="button"
+            onClick={openTripForm}
+            disabled={!user}
+            className="flex min-h-[56px] flex-col items-center justify-center rounded-2xl bg-indigo-600 text-xs font-bold text-white shadow-lg shadow-indigo-200 disabled:opacity-50"
+          >
+            <Plus className="mb-0.5 h-5 w-5" />
+            Trip
+          </button>
+          <button
+            type="button"
+            onClick={onOpenLocationsTab}
+            className="flex min-h-[56px] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600"
+          >
+            <MapPin className="mb-0.5 h-4 w-4" />
+            Places
+          </button>
         </div>
       </div>
 
@@ -1771,7 +2268,7 @@ const TrackerView = ({
                     <Pencil className="w-5 h-5" /> Editing Trip
                   </>
                 ) : (
-                  "New Mileage Entry"
+                  "Journey Builder"
                 )}
               </h3>
               <button type="button" onClick={resetForm} className="text-slate-400 hover:text-slate-600">
@@ -1779,67 +2276,121 @@ const TrackerView = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <Input
-                type="date"
-                label="Date"
-                value={formData.date}
-                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-              />
-              <Select
-                label="Starting Point"
-                options={locationOptions}
-                value={formData.startPoint}
-                onChange={(e) => setFormData({ ...formData, startPoint: e.target.value })}
-              />
-              <Select
-                label="Finish Point"
-                options={locationOptions}
-                value={formData.finishPoint}
-                onChange={(e) => setFormData({ ...formData, finishPoint: e.target.value })}
-              />
-              <Input
-                label="Clients Visited"
-                placeholder="e.g. John Doe"
-                value={formData.clientsVisited}
-                onChange={(e) => setFormData({ ...formData, clientsVisited: e.target.value })}
-              />
+            <div className="rounded-3xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">1</span>
+                <div>
+                  <p className="font-bold text-slate-800">Journey</p>
+                  <p className="text-xs text-slate-500">Pick the route points; postcodes fill automatically from saved locations.</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Input
+                  type="date"
+                  label="Date"
+                  value={formData.date}
+                  onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                />
+                <Select
+                  label="Start"
+                  options={locationOptions}
+                  value={formData.startPoint}
+                  onChange={(e) => updateRoutePoint("startPoint", "startPostcode", e.target.value)}
+                />
+                <Select
+                  label="Finish"
+                  options={locationOptions}
+                  value={formData.finishPoint}
+                  onChange={(e) => updateRoutePoint("finishPoint", "finishPostcode", e.target.value)}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Input
+                  label="Start Postcode"
+                  placeholder="e.g. L36 7XA"
+                  value={formData.startPostcode}
+                  onChange={(e) => setFormData({ ...formData, startPostcode: e.target.value.toUpperCase() })}
+                />
+                <Input
+                  label="Finish Postcode"
+                  placeholder="e.g. M17 1AB"
+                  value={formData.finishPostcode}
+                  onChange={(e) => setFormData({ ...formData, finishPostcode: e.target.value.toUpperCase() })}
+                />
+              </div>
             </div>
 
-            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 block">
-                Intermediate Stops (Optional)
-              </span>
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-sm font-black text-white">2</span>
+                <div>
+                  <p className="font-bold text-slate-800">Stops</p>
+                  <p className="text-xs text-slate-500">Add client, venue, or event stops in travel order.</p>
+                </div>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <Select
                   label="1st Stop"
                   placeholder="None"
                   options={locationOptions}
                   value={formData.stop1}
-                  onChange={(e) => setFormData({ ...formData, stop1: e.target.value })}
+                  onChange={(e) => updateRoutePoint("stop1", "stop1Postcode", e.target.value)}
                 />
                 <Select
                   label="2nd Stop"
                   placeholder="None"
                   options={locationOptions}
                   value={formData.stop2}
-                  onChange={(e) => setFormData({ ...formData, stop2: e.target.value })}
+                  onChange={(e) => updateRoutePoint("stop2", "stop2Postcode", e.target.value)}
                 />
                 <Select
                   label="3rd Stop"
                   placeholder="None"
                   options={locationOptions}
                   value={formData.stop3}
-                  onChange={(e) => setFormData({ ...formData, stop3: e.target.value })}
+                  onChange={(e) => updateRoutePoint("stop3", "stop3Postcode", e.target.value)}
                 />
                 <Select
                   label="4th Stop"
                   placeholder="None"
                   options={locationOptions}
                   value={formData.stop4}
-                  onChange={(e) => setFormData({ ...formData, stop4: e.target.value })}
+                  onChange={(e) => updateRoutePoint("stop4", "stop4Postcode", e.target.value)}
                 />
               </div>
+              {(formData.stop1 || formData.stop2 || formData.stop3 || formData.stop4) && (
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {formData.stop1 && (
+                    <Input
+                      label="1st Stop Postcode"
+                      value={formData.stop1Postcode}
+                      onChange={(e) => setFormData({ ...formData, stop1Postcode: e.target.value.toUpperCase() })}
+                    />
+                  )}
+                  {formData.stop2 && (
+                    <Input
+                      label="2nd Stop Postcode"
+                      value={formData.stop2Postcode}
+                      onChange={(e) => setFormData({ ...formData, stop2Postcode: e.target.value.toUpperCase() })}
+                    />
+                  )}
+                  {formData.stop3 && (
+                    <Input
+                      label="3rd Stop Postcode"
+                      value={formData.stop3Postcode}
+                      onChange={(e) => setFormData({ ...formData, stop3Postcode: e.target.value.toUpperCase() })}
+                    />
+                  )}
+                  {formData.stop4 && (
+                    <Input
+                      label="4th Stop Postcode"
+                      value={formData.stop4Postcode}
+                      onChange={(e) => setFormData({ ...formData, stop4Postcode: e.target.value.toUpperCase() })}
+                    />
+                  )}
+                </div>
+              )}
             </div>
 
             {hasMultipleLegs && (
@@ -1874,16 +2425,36 @@ const TrackerView = ({
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-4">
+            <div className="rounded-3xl border border-slate-200 bg-white p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-sm font-black text-white">3</span>
+                <div>
+                  <p className="font-bold text-slate-800">Purpose</p>
+                  <p className="text-xs text-slate-500">What was the trip for?</p>
+                </div>
+              </div>
               <Input
                 label="Description"
                 placeholder="Meeting purpose etc."
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               />
+              <Input
+                label="Clients Visited"
+                placeholder="e.g. John Doe"
+                value={formData.clientsVisited}
+                onChange={(e) => setFormData({ ...formData, clientsVisited: e.target.value })}
+              />
             </div>
 
-            <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+            <div className="bg-indigo-50 p-4 rounded-3xl border border-indigo-100 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+              <div className="md:col-span-12 flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">4</span>
+                <div>
+                  <p className="font-bold text-slate-800">Mileage & Claim</p>
+                  <p className="text-xs text-slate-500">Saved routes auto-fill miles; you can override any leg.</p>
+                </div>
+              </div>
               <div className="md:col-span-3">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Miles</label>
@@ -1922,6 +2493,14 @@ const TrackerView = ({
                 <div className="text-xl font-bold text-blue-600">{formatCurrency(totalCharge)}</div>
                 <div className="text-[10px] text-blue-700 uppercase font-bold">Chargeable</div>
               </div>
+              <div className="md:col-span-1">
+                <Select
+                  label="Status"
+                  options={ENTRY_STATUS_OPTIONS}
+                  value={formData.status}
+                  onChange={(e) => setFormData({ ...formData, status: e.target.value as EntryStatus })}
+                />
+              </div>
             </div>
 
             <div className="flex justify-end pt-2">
@@ -1937,24 +2516,34 @@ const TrackerView = ({
       {/* Data Table */}
       <Card className="overflow-hidden">
         {/* Desktop Table View */}
-        <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-          <table className="w-full min-w-[920px] text-sm text-left">
+        <div className="hidden xl:block overflow-x-auto overscroll-x-contain">
+          <table className="w-full min-w-[1080px] table-fixed text-sm text-left">
+            <colgroup>
+              <col className="w-[96px]" />
+              <col className="w-[360px]" />
+              <col className="w-[220px]" />
+              <col className="w-[72px]" />
+              <col className="w-[88px]" />
+              <col className="w-[88px]" />
+              <col className="w-[108px]" />
+              <col className="w-[80px]" />
+            </colgroup>
             <thead className="bg-indigo-900 text-white uppercase text-xs font-semibold">
               <tr>
-                <th className="px-4 py-3 whitespace-nowrap">Date</th>
-                <th className="px-4 py-3 whitespace-nowrap">Route</th>
-                <th className="px-4 py-3 whitespace-nowrap">Clients</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Miles</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Claim ({DEFAULT_CURRENCY})</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Charge ({DEFAULT_CURRENCY})</th>
-                <th className="px-4 py-3 whitespace-nowrap">Description</th>
-                <th className="px-4 py-3 whitespace-nowrap w-24"></th>
+                <th className="px-3 py-3 whitespace-nowrap">Date</th>
+                <th className="px-3 py-3 whitespace-nowrap">Route</th>
+                <th className="px-3 py-3 whitespace-nowrap">Purpose</th>
+                <th className="px-3 py-3 whitespace-nowrap text-right">Miles</th>
+                <th className="px-3 py-3 whitespace-nowrap text-right">Claim</th>
+                <th className="px-3 py-3 whitespace-nowrap text-right">Charge</th>
+                <th className="px-3 py-3 whitespace-nowrap">Status</th>
+                <th className="px-3 py-3 whitespace-nowrap w-20"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {entries.length === 0 ? (
+              {filteredEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center">
+                  <td colSpan={8} className="px-4 py-10 text-center">
                     <div className="mx-auto flex max-w-md flex-col items-center gap-3">
                       <div className="rounded-full bg-indigo-50 p-3">
                         <Navigation className="h-5 w-5 text-indigo-500" />
@@ -1976,38 +2565,121 @@ const TrackerView = ({
                   </td>
                 </tr>
               ) : (
-                entries.map((entry) => (
+                filteredEntries.map((entry) => (
                   <tr
                     key={entry.id}
                     className={`hover:bg-slate-50 transition-colors ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
                   >
-                    <td className="px-4 py-3 font-medium text-slate-700">{formatDate(entry.date)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center gap-1 text-xs text-slate-500">
-                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div> {entry.startPoint}
+                    <td className="px-3 py-4 align-top font-medium text-slate-700">{formatDate(entry.date)}</td>
+                    <td className="px-3 py-4 align-top">
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-[14px_1fr_auto] items-start gap-2 text-xs">
+                          <div className="mt-1.5 h-2 w-2 rounded-full bg-emerald-400"></div>
+                          <div className="min-w-0">
+                            <div className="font-semibold leading-snug text-slate-700 break-words">{entry.startPoint}</div>
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Start</div>
+                          </div>
+                          <span
+                            className={`rounded-md px-2 py-1 text-[11px] font-bold ${entry.startPostcode ? "bg-slate-100 text-slate-700" : "bg-amber-50 text-amber-700"}`}
+                          >
+                            {entry.startPostcode || "Missing"}
+                          </span>
                         </div>
-                        {(entry.stop1 || entry.stop2) && (
-                          <div className="pl-2.5 border-l border-slate-200 ml-0.5 text-xs text-slate-400">
-                            {entry.stop1 && <div>• {entry.stop1}</div>}
-                            {entry.stop2 && <div>• {entry.stop2}</div>}
-                            {(entry.stop3 || entry.stop4) && <div className="italic">+ more stops</div>}
+
+                        {[entry.stop1, entry.stop2, entry.stop3, entry.stop4].some(Boolean) && (
+                          <div className="ml-[5px] space-y-1.5 border-l border-slate-200 pl-4">
+                            {[
+                              { name: entry.stop1, postcode: entry.stop1Postcode },
+                              { name: entry.stop2, postcode: entry.stop2Postcode },
+                              { name: entry.stop3, postcode: entry.stop3Postcode },
+                              { name: entry.stop4, postcode: entry.stop4Postcode },
+                            ]
+                              .filter((stop) => stop.name)
+                              .map((stop, index) => (
+                                <div
+                                  key={`${entry.id}-desktop-stop-${index}`}
+                                  className="grid grid-cols-[1fr_auto] items-start gap-2 text-xs"
+                                >
+                                  <div className="min-w-0 leading-snug text-slate-500 break-words">
+                                    Stop {index + 1}: <span className="font-medium text-slate-600">{stop.name}</span>
+                                  </div>
+                                  <span
+                                    className={`rounded-md px-2 py-1 text-[11px] font-bold ${stop.postcode ? "bg-slate-100 text-slate-700" : "bg-amber-50 text-amber-700"}`}
+                                  >
+                                    {stop.postcode || "Missing"}
+                                  </span>
+                                </div>
+                              ))}
                           </div>
                         )}
-                        <div className="flex items-center gap-1 text-xs text-slate-500">
-                          <div className="w-1.5 h-1.5 rounded-full bg-red-400"></div> {entry.finishPoint}
+
+                        <div className="grid grid-cols-[14px_1fr_auto] items-start gap-2 text-xs">
+                          <div className="mt-1.5 h-2 w-2 rounded-full bg-red-400"></div>
+                          <div className="min-w-0">
+                            <div className="font-semibold leading-snug text-slate-700 break-words">{entry.finishPoint}</div>
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-red-500">Finish</div>
+                          </div>
+                          <span
+                            className={`rounded-md px-2 py-1 text-[11px] font-bold ${entry.finishPostcode ? "bg-slate-100 text-slate-700" : "bg-amber-50 text-amber-700"}`}
+                          >
+                            {entry.finishPostcode || "Missing"}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${ENTRY_STATUS_CLASSES[entry.status || DEFAULT_ENTRY_STATUS]}`}>
+                            {ENTRY_STATUS_OPTIONS.find((item) => item.value === (entry.status || DEFAULT_ENTRY_STATUS))?.label}
+                          </span>
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${usesOnlySavedRoutes(entry) ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                            {usesOnlySavedRoutes(entry) ? "Saved route" : "Manual miles"}
+                          </span>
+                          {getMissingPostcodeCount(entry) === 0 ? (
+                            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Complete</span>
+                          ) : (
+                            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">Missing postcode</span>
+                          )}
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-slate-600">{entry.clientsVisited}</td>
-                    <td className="px-4 py-3 text-right font-medium text-slate-700">
+                    <td className="px-3 py-4 align-top text-slate-600">
+                      <div className="space-y-1">
+                        <div className="whitespace-normal break-words leading-snug font-medium text-slate-700">
+                          {entry.clientsVisited || "-"}
+                        </div>
+                        {entry.description && (
+                          <div className="line-clamp-2 whitespace-normal break-words text-xs leading-snug text-slate-500">
+                            {entry.description}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-4 align-top text-right font-medium text-slate-700">
                       {Number.parseFloat(entry.totalMiles || "0").toFixed(1)}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold text-emerald-600">{formatCurrency(entry.totalClaim)}</td>
-                    <td className="px-4 py-3 text-right font-bold text-blue-600">{formatCurrency(entry.totalCharge)}</td>
-                    <td className="px-4 py-3 text-slate-500 truncate max-w-[220px]">{entry.description || "-"}</td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-3 py-4 align-top text-right font-bold text-emerald-600">{formatCurrency(entry.totalClaim)}</td>
+                    <td className="px-3 py-4 align-top text-right font-bold text-blue-600">{formatCurrency(entry.totalCharge)}</td>
+                    <td className="px-3 py-4 align-top">
+                      <select
+                        value={entry.status || DEFAULT_ENTRY_STATUS}
+                        onChange={(event) => void onUpdateEntry(entry.id, { status: event.target.value as EntryStatus })}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600"
+                      >
+                        {ENTRY_STATUS_OPTIONS.map((status) => (
+                          <option key={status.value} value={status.value}>
+                            {status.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-3 py-4 align-top text-right">
                       <div className="flex justify-end gap-1">
+                        <button
+                          onClick={() => duplicateEntry(entry)}
+                          className="text-slate-400 hover:text-emerald-600 transition-colors p-1"
+                          title="Duplicate Entry"
+                          type="button"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => handleEditClick(entry)}
                           className="text-slate-400 hover:text-indigo-600 transition-colors p-1"
@@ -2034,8 +2706,8 @@ const TrackerView = ({
         </div>
 
         {/* Mobile Card View */}
-        <div className="md:hidden divide-y divide-slate-100">
-          {entries.length === 0 ? (
+        <div className="xl:hidden space-y-3 bg-slate-50 p-3">
+          {filteredEntries.length === 0 ? (
             <div className="px-4 py-10 text-center">
               <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
                 <div className="rounded-full bg-indigo-50 p-3">
@@ -2057,52 +2729,119 @@ const TrackerView = ({
               </div>
             </div>
           ) : (
-            entries.map((entry) => (
-              <div
-                key={entry.id}
-                className={`p-3 space-y-2.5 ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 bg-emerald-50/50" : ""}`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="font-semibold text-sm text-slate-700">{formatDate(entry.date)}</div>
-                    <div className="mt-1 text-sm font-medium leading-tight text-slate-700 break-words">
-                      {entry.startPoint} {"->"} {entry.finishPoint}
-                    </div>
-                    {entry.clientsVisited && (
-                      <div className="mt-1 text-xs text-slate-500 break-words">Client: {entry.clientsVisited}</div>
-                    )}
-                  </div>
-                  <Button
-                    variant="secondary"
+            filteredEntries.map((entry) => {
+              const stopCount = [entry.stop1, entry.stop2, entry.stop3, entry.stop4].filter(Boolean).length
+              return (
+                <div
+                  key={entry.id}
+                  className={`overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm ${newlyAddedEntryIds[entry.id] ? "animate-in fade-in-0 slide-in-from-top-1 duration-500 ring-2 ring-emerald-100" : ""}`}
+                >
+                  <button
+                    type="button"
                     onClick={() => setMobileDetailsEntryId(entry.id)}
-                    className="shrink-0 px-2.5 min-h-[38px] text-xs"
+                    className="w-full p-4 text-left"
                   >
-                    Details
-                  </Button>
-                </div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-[0.16em] text-indigo-500">{formatDate(entry.date)}</div>
+                        <div className="mt-1 text-lg font-black leading-tight text-slate-900">
+                          {formatCurrency(entry.totalClaim)}
+                        </div>
+                        <div className="text-xs font-semibold text-slate-400">Claim value</div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${ENTRY_STATUS_CLASSES[entry.status || DEFAULT_ENTRY_STATUS]}`}>
+                          {ENTRY_STATUS_OPTIONS.find((item) => item.value === (entry.status || DEFAULT_ENTRY_STATUS))?.label}
+                        </span>
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${usesOnlySavedRoutes(entry) ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
+                          {usesOnlySavedRoutes(entry) ? "Saved route" : "Manual miles"}
+                        </span>
+                        {getMissingPostcodeCount(entry) === 0 ? (
+                          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">Complete</span>
+                        ) : (
+                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">Missing postcode</span>
+                        )}
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-3 gap-2 pt-0.5">
-                  <div className="text-center p-1.5 bg-slate-50 rounded-lg">
-                    <div className="text-[11px] text-slate-500 mb-0.5">Miles</div>
-                    <div className="font-bold text-sm text-slate-700">{Number.parseFloat(entry.totalMiles || "0").toFixed(1)}</div>
-                  </div>
-                  <div className="text-center p-1.5 bg-emerald-50 rounded-lg">
-                    <div className="text-[11px] text-emerald-700 mb-0.5">Claim</div>
-                    <div className="font-bold text-sm text-emerald-600">{formatCurrency(entry.totalClaim)}</div>
-                  </div>
-                  <div className="text-center p-1.5 bg-blue-50 rounded-lg">
-                    <div className="text-[11px] text-blue-700 mb-0.5">Charge</div>
-                    <div className="font-bold text-sm text-blue-600">{formatCurrency(entry.totalCharge)}</div>
+                    <div className="mt-4 space-y-3">
+                      <div className="grid grid-cols-[18px_1fr_auto] items-start gap-2">
+                        <div className="mt-1.5 h-3 w-3 rounded-full bg-emerald-400 ring-4 ring-emerald-50"></div>
+                        <div className="min-w-0">
+                          <div className="font-bold leading-snug text-slate-800 break-words">{entry.startPoint}</div>
+                          <div className="text-xs font-semibold text-slate-500">{entry.startPostcode || "Postcode missing"}</div>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">Start</span>
+                      </div>
+
+                      {stopCount > 0 && (
+                        <div className="ml-[5px] space-y-2 border-l-2 border-dashed border-slate-200 pl-4">
+                          {[
+                            { point: entry.stop1, postcode: entry.stop1Postcode },
+                            { point: entry.stop2, postcode: entry.stop2Postcode },
+                            { point: entry.stop3, postcode: entry.stop3Postcode },
+                            { point: entry.stop4, postcode: entry.stop4Postcode },
+                          ]
+                            .filter((stop) => stop.point)
+                            .map((stop, index) => (
+                              <div key={`${entry.id}-mobile-stop-${index}`} className="rounded-2xl bg-slate-50 px-3 py-2">
+                                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Stop {index + 1}</div>
+                                <div className="text-sm font-semibold leading-snug text-slate-700 break-words">{stop.point}</div>
+                                <div className="text-xs font-semibold text-slate-500">{stop.postcode || "Postcode missing"}</div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-[18px_1fr_auto] items-start gap-2">
+                        <div className="mt-1.5 h-3 w-3 rounded-full bg-red-400 ring-4 ring-red-50"></div>
+                        <div className="min-w-0">
+                          <div className="font-bold leading-snug text-slate-800 break-words">{entry.finishPoint}</div>
+                          <div className="text-xs font-semibold text-slate-500">{entry.finishPostcode || "Postcode missing"}</div>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">Finish</span>
+                      </div>
+                    </div>
+
+                    {entry.clientsVisited && (
+                      <div className="mt-4 rounded-2xl bg-indigo-50 px-3 py-2 text-xs font-semibold leading-snug text-indigo-700">
+                        Client: {entry.clientsVisited}
+                      </div>
+                    )}
+
+                    <div className="mt-4 grid grid-cols-3 gap-2">
+                      <div className="rounded-2xl bg-slate-50 p-2 text-center">
+                        <div className="text-[11px] font-semibold text-slate-500">Miles</div>
+                        <div className="font-black text-slate-800">{Number.parseFloat(entry.totalMiles || "0").toFixed(1)}</div>
+                      </div>
+                      <div className="rounded-2xl bg-emerald-50 p-2 text-center">
+                        <div className="text-[11px] font-semibold text-emerald-700">Claim</div>
+                        <div className="font-black text-emerald-700">{formatCurrency(entry.totalClaim)}</div>
+                      </div>
+                      <div className="rounded-2xl bg-blue-50 p-2 text-center">
+                        <div className="text-[11px] font-semibold text-blue-700">Charge</div>
+                        <div className="font-black text-blue-700">{formatCurrency(entry.totalCharge)}</div>
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50/70 p-3">
+                    <Button variant="secondary" onClick={() => duplicateEntry(entry)} className="w-full text-xs">
+                      Duplicate
+                    </Button>
+                    <Button variant="secondary" onClick={() => handleEditClick(entry)} className="w-full text-xs">
+                      Edit
+                    </Button>
                   </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       </Card>
 
       <Drawer open={Boolean(mobileDetailsEntryId)} onOpenChange={(open) => !open && setMobileDetailsEntryId(null)}>
-        <DrawerContent className="md:hidden max-h-[88vh]">
+        <DrawerContent className="xl:hidden max-h-[88vh]">
           {mobileDetailsEntry && (
             <>
               <DrawerHeader className="text-left border-b border-slate-100">
@@ -2132,13 +2871,53 @@ const TrackerView = ({
                 <div className="rounded-lg border border-slate-200 p-3">
                   <p className="mb-2 text-[11px] uppercase tracking-wide font-semibold text-slate-500">Route Stops</p>
                   <div className="space-y-1 text-sm text-slate-700">
-                    <div>Start: {mobileDetailsEntry.startPoint}</div>
-                    {[mobileDetailsEntry.stop1, mobileDetailsEntry.stop2, mobileDetailsEntry.stop3, mobileDetailsEntry.stop4]
-                      .filter(Boolean)
+                    <div>
+                      Start: {mobileDetailsEntry.startPoint}{" "}
+                      <span className={mobileDetailsEntry.startPostcode ? "text-slate-500" : "text-amber-600"}>
+                        {mobileDetailsEntry.startPostcode || "Postcode missing"}
+                      </span>
+                    </div>
+                    {[
+                      { point: mobileDetailsEntry.stop1, postcode: mobileDetailsEntry.stop1Postcode },
+                      { point: mobileDetailsEntry.stop2, postcode: mobileDetailsEntry.stop2Postcode },
+                      { point: mobileDetailsEntry.stop3, postcode: mobileDetailsEntry.stop3Postcode },
+                      { point: mobileDetailsEntry.stop4, postcode: mobileDetailsEntry.stop4Postcode },
+                    ]
+                      .filter((stop) => stop.point)
                       .map((stop, index) => (
-                        <div key={`${mobileDetailsEntry.id}-stop-${index}`}>Stop {index + 1}: {stop}</div>
+                        <div key={`${mobileDetailsEntry.id}-stop-${index}`}>
+                          Stop {index + 1}: {stop.point}{" "}
+                          <span className={stop.postcode ? "text-slate-500" : "text-amber-600"}>
+                            {stop.postcode || "Postcode missing"}
+                          </span>
+                        </div>
                       ))}
-                    <div>Finish: {mobileDetailsEntry.finishPoint}</div>
+                    <div>
+                      Finish: {mobileDetailsEntry.finishPoint}{" "}
+                      <span className={mobileDetailsEntry.finishPostcode ? "text-slate-500" : "text-amber-600"}>
+                        {mobileDetailsEntry.finishPostcode || "Postcode missing"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-[11px] uppercase tracking-wide font-semibold text-slate-500">Claim Status</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {ENTRY_STATUS_OPTIONS.map((status) => (
+                      <button
+                        key={`mobile-status-${status.value}`}
+                        type="button"
+                        onClick={() => void onUpdateEntry(mobileDetailsEntry.id, { status: status.value })}
+                        className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                          (mobileDetailsEntry.status || DEFAULT_ENTRY_STATUS) === status.value
+                            ? ENTRY_STATUS_CLASSES[status.value]
+                            : "border-slate-200 bg-white text-slate-500"
+                        }`}
+                      >
+                        {status.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -2167,6 +2946,13 @@ const TrackerView = ({
                 <div className="grid grid-cols-2 gap-2">
                   <Button
                     variant="secondary"
+                    onClick={() => duplicateEntry(mobileDetailsEntry)}
+                    className="w-full"
+                  >
+                    Duplicate
+                  </Button>
+                  <Button
+                    variant="secondary"
                     onClick={() => {
                       handleEditClick(mobileDetailsEntry)
                     }}
@@ -2174,6 +2960,8 @@ const TrackerView = ({
                   >
                     Edit Trip
                   </Button>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
                   <Button
                     variant="secondary"
                     className="w-full text-red-600 border-red-200 hover:bg-red-50"
@@ -2241,6 +3029,58 @@ const TrackerView = ({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Drawer open={isExportPreviewOpen} onOpenChange={setIsExportPreviewOpen}>
+        <DrawerContent className="mx-auto max-h-[90vh] max-w-lg">
+          <DrawerHeader className="text-left">
+            <DrawerTitle>{getMonthLabel(selectedMonth)} Claim Preview</DrawerTitle>
+            <DrawerDescription>Check the claim totals before downloading your CSV.</DrawerDescription>
+          </DrawerHeader>
+          <div className="space-y-4 px-4 pb-4">
+            <div className="rounded-3xl bg-indigo-900 p-4 text-white">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-200">Mileage Claim</p>
+              <p className="mt-1 text-2xl font-black">{getMonthLabel(selectedMonth)}</p>
+              <p className="mt-1 text-sm text-indigo-100">
+                {monthEntries.length} trips · {totals.miles.toFixed(1)} miles
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-2xl bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase text-slate-500">Trips</p>
+                <p className="text-lg font-bold text-slate-800">{monthEntries.length}</p>
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase text-slate-500">Miles</p>
+                <p className="text-lg font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
+              </div>
+              <div className="rounded-2xl bg-emerald-50 p-3">
+                <p className="text-xs font-semibold uppercase text-emerald-700">Claim</p>
+                <p className="text-lg font-bold text-emerald-700">{formatCurrency(totals.claim)}</p>
+              </div>
+              <div className="rounded-2xl bg-amber-50 p-3">
+                <p className="text-xs font-semibold uppercase text-amber-700">Missing Postcodes</p>
+                <p className="text-lg font-bold text-amber-700">{missingPostcodeTrips}</p>
+              </div>
+            </div>
+          </div>
+          <DrawerFooter className="pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+            <Button
+              disabled={monthEntries.length === 0}
+              onClick={() => {
+                onExport(monthEntries, selectedMonth)
+                setIsExportPreviewOpen(false)
+              }}
+              className="w-full"
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
+            <DrawerClose asChild>
+              <Button variant="secondary">Cancel</Button>
+            </DrawerClose>
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
     </div>
   )
 }
@@ -2269,6 +3109,8 @@ const LocationsView = ({
   const [newRoute, setNewRoute] = useState({ from: "", to: "", distance: "" })
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
   const [mobileTab, setMobileTab] = useState("add-location")
+  const [locationSearch, setLocationSearch] = useState("")
+  const [locationCategoryFilter, setLocationCategoryFilter] = useState("All")
 
   const handleLocSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2353,7 +3195,19 @@ const LocationsView = ({
       return a.displayTo.localeCompare(b.displayTo)
     })
 
-  const locationOptions = locations.map((l) => ({ value: l.name, label: l.name }))
+  const locationCategories = ["All", ...Array.from(new Set(locations.map((location) => location.category).filter(Boolean))).sort()]
+  const filteredLocations = locations.filter((location) => {
+    const search = locationSearch.trim().toLowerCase()
+    const matchesSearch =
+      !search ||
+      [location.name, location.address, location.city, location.postcode, location.category]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(search))
+    const matchesCategory = locationCategoryFilter === "All" || location.category === locationCategoryFilter
+    return matchesSearch && matchesCategory
+  })
+
+  const locationOptions = locations.map((l) => ({ value: l.name, label: l.postcode ? `${l.name} - ${l.postcode}` : l.name }))
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -2442,6 +3296,8 @@ const LocationsView = ({
                   { value: "Personal", label: "Personal" },
                   { value: "Office", label: "Office" },
                   { value: "Client", label: "Client" },
+                  { value: "Venue", label: "Venue" },
+                  { value: "Event", label: "Event" },
                   { value: "Site", label: "Site" },
                 ]}
                 value={newLoc.category}
@@ -2454,45 +3310,78 @@ const LocationsView = ({
           </Card>
         </div>
         <div className={`lg:col-span-2 ${mobileTab === "view-locations" ? "block" : "hidden md:block"}`}>
-          <Card>
+          <Card className="overflow-hidden">
             <div className="bg-indigo-900 text-white px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center">
               <h3 className="font-bold">Saved Locations</h3>
               <span className="text-indigo-200 text-sm bg-indigo-800 px-2 py-1 rounded-full">
-                {locations.length} locations
+                {filteredLocations.length} / {locations.length} locations
               </span>
             </div>
-            <div className="divide-y divide-slate-100 md:max-h-[500px] md:overflow-y-auto">
-              {locations.length === 0 ? (
+            <div className="sticky top-0 z-10 space-y-3 border-b border-slate-100 bg-white/95 px-4 py-3 backdrop-blur sm:px-6 md:bg-slate-50">
+              <Input
+                label="Search Locations"
+                placeholder="Search name, city, postcode..."
+                value={locationSearch}
+                onChange={(e) => setLocationSearch(e.target.value)}
+              />
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {locationCategories.map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => setLocationCategoryFilter(category)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                      locationCategoryFilter === category
+                        ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                        : "border-slate-200 bg-white text-slate-500"
+                    }`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-3 bg-slate-50 p-3 md:max-h-[500px] md:overflow-y-auto">
+              {filteredLocations.length === 0 ? (
                 <div className="p-8 text-center">
                   <div className="mx-auto flex max-w-xs flex-col items-center gap-3">
                     <div className="rounded-full bg-indigo-50 p-3">
                       <MapPin className="h-5 w-5 text-indigo-500" />
                     </div>
-                    <p className="font-semibold text-slate-700">No locations yet</p>
-                    <p className="text-sm text-slate-500">Add Home, Office, and client locations to speed up trip logging.</p>
+                    <p className="font-semibold text-slate-700">{locations.length === 0 ? "No locations yet" : "No matching locations"}</p>
+                    <p className="text-sm text-slate-500">
+                      {locations.length === 0
+                        ? "Add Home, Office, and client locations to speed up trip logging."
+                        : "Try another search or category filter."}
+                    </p>
                     <Button variant="secondary" onClick={() => setMobileTab("add-location")}>
-                      Add First Location
+                      Add Location
                     </Button>
                   </div>
                 </div>
               ) : (
-                locations.map((loc) => (
+                filteredLocations.map((loc) => (
                   <div
                     key={loc.id}
-                    className="p-3 sm:p-4 flex items-start justify-between gap-3 hover:bg-slate-50 group transition-colors"
+                    className="group flex items-start justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm transition-colors hover:border-indigo-100 hover:bg-indigo-50/30"
                   >
                     <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div
-                        className={`mt-1 w-2 h-2 rounded-full ${loc.category === "Personal" ? "bg-emerald-400" : loc.category === "Office" ? "bg-blue-400" : "bg-indigo-400"}`}
-                      ></div>
+                        className={`mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${loc.category === "Personal" ? "bg-emerald-50 text-emerald-600" : loc.category === "Office" ? "bg-blue-50 text-blue-600" : "bg-indigo-50 text-indigo-600"}`}
+                      >
+                        <MapPin className="h-5 w-5" />
+                      </div>
                       <div className="min-w-0">
-                        <h4 className="font-bold text-slate-700 break-words">{loc.name}</h4>
-                        <p className="text-sm text-slate-500 break-words">
-                          {loc.address}, {loc.city}, {loc.postcode}
-                        </p>
-                        <span className="inline-block mt-1 text-[10px] uppercase font-bold text-slate-400 tracking-wider border border-slate-200 px-1.5 rounded">
-                          {loc.category}
-                        </span>
+                        <h4 className="font-black text-slate-800 break-words">{loc.name}</h4>
+                        <p className="mt-0.5 text-sm text-slate-500 break-words">{[loc.address, loc.city].filter(Boolean).join(", ")}</p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          <span className="inline-block rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                            {loc.postcode || "No postcode"}
+                          </span>
+                          <span className="inline-block rounded-full border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            {loc.category}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <button

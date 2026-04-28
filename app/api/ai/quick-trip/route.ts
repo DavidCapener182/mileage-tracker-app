@@ -16,12 +16,18 @@ interface RequestSavedRoute {
 interface ParsedTripShape {
   date?: string
   startPoint?: string
+  startPostcode?: string
   stop1?: string
+  stop1Postcode?: string
   stop2?: string
+  stop2Postcode?: string
   stop3?: string
+  stop3Postcode?: string
   stop4?: string
+  stop4Postcode?: string
   stops?: string[]
   finishPoint?: string
+  finishPostcode?: string
   clientsVisited?: string
   description?: string
   unmatchedPlaces?: string[]
@@ -55,6 +61,10 @@ const isTransientNetworkError = (error: unknown) =>
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const sanitize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "")
+const UK_POSTCODE_REGEX = /\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i
+
+const normalizePostcode = (value: string | undefined) => (value || "").trim().toUpperCase()
+const extractUKPostcode = (value: string | undefined) => normalizePostcode(value?.match(UK_POSTCODE_REGEX)?.[0])
 
 const formatLocationAddress = (location: RequestLocation) =>
   [location.address, location.city, location.postcode].filter(Boolean).join(", ").trim() || location.name
@@ -248,8 +258,10 @@ Rules:
 ${locationListWithAddresses}
 - ONLY match a place to a saved location if the user is clearly referring to that exact business/place. For example, if the user says "Arndale Centre Manchester" and a saved location is "Footasylum Manchester Arndale", these are DIFFERENT places (one is a shopping centre, the other is a specific store) — do NOT match them. When in doubt, treat the place as new/unmatched rather than forcing a wrong match.
 - When a place clearly maps to a saved location, use the EXACT saved location name in the route field.
+- When a place maps to a saved location, include that saved location's postcode in the matching postcode field.
+- For unmatched/ad-hoc places, leave postcode fields blank unless the user explicitly gave a postcode.
 - When a place does NOT match any saved location, still fill the route field with the user's own description of that place (e.g. "Arndale Centre Manchester", "Sharp Project Manchester"). Also include these names in unmatchedPlaces.
-- For each name in unmatchedPlaces, add an entry in resolvedAddresses with a Google Maps-searchable address or query. Use any real-world knowledge you have about the business/place to produce the best possible search query (e.g. "Manchester Arndale, Market Street, Manchester, UK" or "Sharp Project, Thorp Road, Manchester, UK").
+- For each name in unmatchedPlaces, add an entry in resolvedAddresses with a Google Maps-searchable address or query. Include the postcode when you know it. Use any real-world knowledge you have about the business/place to produce the best possible search query (e.g. "Manchester Arndale, Market Street, Manchester M4 3AD, UK" or "Sharp Project, Thorp Road, Manchester M40 5BJ, UK").
 - Include ALL stops the user mentions, in order. Never drop a stop just because it does not match a saved location.
 - Keep stop order exactly as traveled.
 - If "today" is used, resolve to ${input.today}.
@@ -260,11 +272,17 @@ Return JSON with this shape only:
 {
   "date": "YYYY-MM-DD",
   "startPoint": "",
+  "startPostcode": "",
   "stop1": "",
+  "stop1Postcode": "",
   "stop2": "",
+  "stop2Postcode": "",
   "stop3": "",
+  "stop3Postcode": "",
   "stop4": "",
+  "stop4Postcode": "",
   "finishPoint": "",
+  "finishPostcode": "",
   "clientsVisited": "",
   "description": "",
   "unmatchedPlaces": [],
@@ -382,15 +400,26 @@ export async function POST(request: Request) {
       .slice(0, 4)
 
     const resolvedFinish = resolveLocation(rawParsed.finishPoint)
+    const locationMap = new Map(locations.map((location) => [location.name, location]))
+    const getPostcodeForResolvedName = (name: string, fallback?: string) =>
+      normalizePostcode(locationMap.get(name)?.postcode) ||
+      normalizePostcode(fallback) ||
+      extractUKPostcode(geminiResolvedAddresses[name])
 
     const trip = {
       date: normalizeDate(rawParsed.date, today),
       startPoint: resolvedStart || "",
+      startPostcode: getPostcodeForResolvedName(resolvedStart, rawParsed.startPostcode),
       stop1: resolvedStops[0] || "",
+      stop1Postcode: getPostcodeForResolvedName(resolvedStops[0] || "", rawParsed.stop1Postcode),
       stop2: resolvedStops[1] || "",
+      stop2Postcode: getPostcodeForResolvedName(resolvedStops[1] || "", rawParsed.stop2Postcode),
       stop3: resolvedStops[2] || "",
+      stop3Postcode: getPostcodeForResolvedName(resolvedStops[2] || "", rawParsed.stop3Postcode),
       stop4: resolvedStops[3] || "",
+      stop4Postcode: getPostcodeForResolvedName(resolvedStops[3] || "", rawParsed.stop4Postcode),
       finishPoint: resolvedFinish || "",
+      finishPostcode: getPostcodeForResolvedName(resolvedFinish, rawParsed.finishPostcode),
       clientsVisited: (rawParsed.clientsVisited || "").trim(),
       description: (rawParsed.description || "").trim(),
     }
@@ -401,7 +430,6 @@ export async function POST(request: Request) {
     }
 
     const orderedRoute = [trip.startPoint, trip.stop1, trip.stop2, trip.stop3, trip.stop4, trip.finishPoint].filter(Boolean)
-    const locationMap = new Map(locations.map((location) => [location.name, location]))
     const adhocSet = new Set(adhocLocations)
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""
 
