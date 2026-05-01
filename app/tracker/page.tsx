@@ -211,6 +211,44 @@ const getMonthLabel = (monthKey: string) => {
   return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(parsed)
 }
 
+const getClaimMonthDateRange = (monthKey: string) => {
+  const parsed = new Date(`${monthKey}-01T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return null
+
+  const year = parsed.getFullYear()
+  const monthIndex = parsed.getMonth()
+  // Claim month runs from the 23rd of the previous calendar month to the 23rd of this month.
+  const start = new Date(year, monthIndex - 1, 23)
+  const end = new Date(year, monthIndex, 23)
+
+  const toDateKey = (value: Date) => {
+    const month = `${value.getMonth() + 1}`.padStart(2, "0")
+    const day = `${value.getDate()}`.padStart(2, "0")
+    return `${value.getFullYear()}-${month}-${day}`
+  }
+
+  return {
+    start: toDateKey(start),
+    end: toDateKey(end),
+  }
+}
+
+const isDateInClaimMonth = (dateValue: string | undefined, monthKey: string) => {
+  if (!dateValue) return false
+  const range = getClaimMonthDateRange(monthKey)
+  if (!range) return false
+  return dateValue >= range.start && dateValue <= range.end
+}
+
+const getClaimMonthRangeLabel = (monthKey: string) => {
+  const range = getClaimMonthDateRange(monthKey)
+  if (!range) return ""
+  const start = new Date(`${range.start}T00:00:00`)
+  const end = new Date(`${range.end}T00:00:00`)
+  const formatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" })
+  return `${formatter.format(start)} - ${formatter.format(end)}`
+}
+
 const shiftMonth = (monthKey: string, offset: number) => {
   const parsed = new Date(`${monthKey}-01T00:00:00`)
   parsed.setMonth(parsed.getMonth() + offset)
@@ -925,7 +963,7 @@ const VehicleMileageView = ({ user, entries }: { user: { id: string } | null; en
   }
 
   const monthEntries = useMemo(
-    () => entries.filter((entry) => entry.date?.startsWith(selectedMonth)),
+    () => entries.filter((entry) => isDateInClaimMonth(entry.date, selectedMonth)),
     [entries, selectedMonth],
   )
   const monthlyBusinessMiles = useMemo(
@@ -987,7 +1025,9 @@ const VehicleMileageView = ({ user, entries }: { user: { id: string } | null; en
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200">Vehicle Cost Check</p>
               <h2 className="text-2xl font-bold">{getMonthLabel(selectedMonth)}</h2>
-              <p className="text-sm text-indigo-100">Compare total odometer miles against your claim miles.</p>
+              <p className="text-sm text-indigo-100">
+                Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Compare odometer miles against claim miles.
+              </p>
             </div>
           </div>
           <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
@@ -1376,7 +1416,7 @@ const TrackerView = ({
     [entries, mobileDetailsEntryId],
   )
   const monthEntries = useMemo(
-    () => entries.filter((entry) => entry.date?.startsWith(selectedMonth)),
+    () => entries.filter((entry) => isDateInClaimMonth(entry.date, selectedMonth)),
     [entries, selectedMonth],
   )
   const filteredEntries = useMemo(
@@ -1811,7 +1851,9 @@ const TrackerView = ({
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-500">Claim Mode</p>
             <h2 className="text-2xl font-black tracking-tight text-slate-900">{getMonthLabel(selectedMonth)}</h2>
-            <p className="text-sm text-slate-500">Everything below is filtered to this claim month and status.</p>
+            <p className="text-sm text-slate-500">
+              Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Everything below is filtered to this period and status.
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, -1))}>
@@ -2180,8 +2222,7 @@ const TrackerView = ({
               className="w-full sm:w-auto text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
             >
               <Trash2 className="w-4 h-4" />
-              <span className="hidden sm:inline">Delete All</span>
-              <span className="sm:hidden">Delete</span>
+              <span>Delete All</span>
             </Button>
           )}
           <Button onClick={openTripForm} disabled={!user} className="hidden md:flex w-full sm:w-auto">
@@ -2825,12 +2866,19 @@ const TrackerView = ({
                     </div>
                   </button>
 
-                  <div className="grid grid-cols-2 gap-2 border-t border-slate-100 bg-slate-50/70 p-3">
+                  <div className="grid grid-cols-3 gap-2 border-t border-slate-100 bg-slate-50/70 p-3">
                     <Button variant="secondary" onClick={() => duplicateEntry(entry)} className="w-full text-xs">
                       Duplicate
                     </Button>
                     <Button variant="secondary" onClick={() => handleEditClick(entry)} className="w-full text-xs">
                       Edit
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setEntryIdToDelete(entry.id)}
+                      className="w-full text-xs border-red-200 text-red-600 hover:bg-red-50"
+                    >
+                      Delete
                     </Button>
                   </div>
                 </div>
