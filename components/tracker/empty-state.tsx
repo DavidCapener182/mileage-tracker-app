@@ -1,0 +1,1 @@
+export function EmptyState() { return <div className="rounded-2xl border border-dashed bg-white p-8 text-center text-slate-600">No trips in this claim period yet.<br/>Add your first trip or switch to another claim period.</div> }

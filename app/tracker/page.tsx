@@ -3,8 +3,13 @@
 import type React from "react"
 
 import { useState, useEffect, useMemo, useRef } from "react"
-import type { AuthChangeEvent, Session } from "@supabase/supabase-js"
+import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
+import { KpiSummary } from "@/components/tracker/kpi-summary"
+import { ClaimPeriodSwitcher } from "@/components/tracker/claim-period-switcher"
+import { StatusBadge } from "@/components/tracker/status-badge"
+import { EmptyState } from "@/components/tracker/empty-state"
+import { LoadingSkeleton } from "@/components/tracker/loading-skeleton"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
 import {
@@ -411,7 +416,7 @@ export default function MileageTrackerPage() {
     } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
       const currentUser = session?.user || null
       // Only update user if the ID has changed to prevent unnecessary re-renders/fetches
-      setUser((prevUser: any) => {
+      setUser((prevUser: User | null) => {
         if (prevUser?.id === currentUser?.id) return prevUser
         return currentUser
       })
@@ -420,7 +425,7 @@ export default function MileageTrackerPage() {
       }
     })
 
-    supabase.auth.getUser().then(({ data: { user }, error }) => {
+    supabase.auth.getUser().then(({ data: { user }, error }: { data: { user: User | null }; error: Error | null }) => {
       // Invalid/expired refresh token – sign out and force re-login
       if (error) {
         const isRefreshTokenError =
@@ -435,7 +440,7 @@ export default function MileageTrackerPage() {
       if (!user) {
         router.push("/auth/login")
       } else {
-        setUser((prevUser: any) => {
+        setUser((prevUser: User | null) => {
           if (prevUser?.id === user.id) return prevUser
           return user
         })
@@ -453,7 +458,6 @@ export default function MileageTrackerPage() {
       if (locations.length === 0 && savedRoutes.length === 0 && entries.length === 0) {
         setIsLoading(true)
       }
-      console.log("[v0] Fetching initial data...")
 
       const [locationsRes, routesRes, entriesRes] = await Promise.all([
         supabase.from("mt_locations").select("*").order("name"),
@@ -465,7 +469,6 @@ export default function MileageTrackerPage() {
           .order("createdat", { ascending: false }),
       ])
 
-      console.log("[v0] Entries fetched:", entriesRes.data?.length || 0)
       if (locationsRes.data) setLocations(locationsRes.data)
       if (routesRes.data) setSavedRoutes(routesRes.data)
       if (entriesRes.data) setEntries(entriesRes.data.map(normalizeEntry))
@@ -477,8 +480,7 @@ export default function MileageTrackerPage() {
 
     const channel = supabase
       .channel("db_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "mt_locations" }, (payload) => {
-        console.log("[v0] Location change:", payload.eventType, payload.new)
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_locations" }, (payload: { eventType: "INSERT" | "UPDATE" | "DELETE"; new: any; old: any }) => {
         if (payload.eventType === "INSERT") {
           setLocations((prev) => {
             if (prev.some((loc) => loc.id === payload.new.id)) return prev
@@ -490,8 +492,7 @@ export default function MileageTrackerPage() {
           setLocations((prev) => prev.map((loc) => (loc.id === payload.new.id ? (payload.new as Location) : loc)))
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "mt_saved_routes" }, (payload) => {
-        console.log("[v0] Route change:", payload.eventType, payload.new)
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_saved_routes" }, (payload: { eventType: "INSERT" | "UPDATE" | "DELETE"; new: any; old: any }) => {
         if (payload.eventType === "INSERT") {
           setSavedRoutes((prev) => {
             if (prev.some((route) => route.id === payload.new.id)) return prev
@@ -505,13 +506,11 @@ export default function MileageTrackerPage() {
           )
         }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "mt_entries" }, (payload) => {
-        console.log("[v0] Entry change:", payload.eventType, payload.new || payload.old)
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt_entries" }, (payload: { eventType: "INSERT" | "UPDATE" | "DELETE"; new: any; old: any }) => {
         if (payload.eventType === "INSERT") {
           setEntries((prev) => {
             if (prev.some((entry) => entry.id === payload.new.id)) return prev
             const newEntry = normalizeEntry(payload.new)
-            console.log("[v0] Adding entry to list:", newEntry.id, newEntry.date)
             return [newEntry, ...prev]
           })
         } else if (payload.eventType === "DELETE") {
@@ -520,12 +519,9 @@ export default function MileageTrackerPage() {
           setEntries((prev) => prev.map((entry) => (entry.id === payload.new.id ? normalizeEntry(payload.new) : entry)))
         }
       })
-      .subscribe((status) => {
-        console.log("[v0] Realtime subscription status:", status)
-      })
+      .subscribe(() => {})
 
     return () => {
-      console.log("[v0] Unsubscribing from realtime")
       channel.unsubscribe()
     }
   }, [user, supabase])
@@ -620,25 +616,19 @@ export default function MileageTrackerPage() {
   const handleAddEntry = async (entry: Omit<Entry, "id" | "createdat">) => {
     // Changed from created_at to createdat
     if (!user) throw new Error("User not authenticated")
-    console.log("[v0] Adding entry:", entry)
-    console.log("[v0] User ID:", user?.id)
 
     const dataToInsert = {
       ...entryToDatabasePayload(entry),
       userid: user!.id,
     }
-    console.log("[v0] Data to insert:", dataToInsert)
 
     const { data, error } = await supabase.from("mt_entries").insert([dataToInsert]).select()
 
-    console.log("[v0] Insert result - data:", data, "error:", error)
 
     if (error) {
-      console.error("[v0] Database error:", error)
       throw error
     }
 
-    console.log("[v0] Entry added successfully:", data)
 
     if (data && data.length > 0) {
       const { data: freshEntries } = await supabase
@@ -648,7 +638,6 @@ export default function MileageTrackerPage() {
         .order("createdat", { ascending: false })
 
       if (freshEntries) {
-        console.log("[v0] Manually updating entries after insert:", freshEntries.length)
         setEntries(freshEntries.map(normalizeEntry))
       }
     }
@@ -664,16 +653,13 @@ export default function MileageTrackerPage() {
   }
 
   const handleDeleteEntry = async (id: string) => {
-    console.log("[v0] handleDeleteEntry called with id:", id)
 
     try {
       // Optimistically update the UI immediately
       setEntries((prev) => prev.filter((entry) => entry.id !== id))
 
       const { data, error } = await supabase.from("mt_entries").delete().eq("id", id)
-      console.log("[v0] Delete result - data:", data, "error:", error)
       if (error) {
-        console.error("[v0] Delete error:", error)
         // Revert the optimistic update on error
         const { data: freshEntries } = await supabase
           .from("mt_entries")
@@ -686,7 +672,6 @@ export default function MileageTrackerPage() {
         throw new Error(error.message)
       }
     } catch (err) {
-      console.error("[v0] Delete exception:", err)
       // Revert the optimistic update on error
       const { data: freshEntries } = await supabase
         .from("mt_entries")
@@ -701,7 +686,6 @@ export default function MileageTrackerPage() {
   }
 
   const handleDeleteAllEntries = async () => {
-    console.log("[v0] handleDeleteAllEntries called")
 
     if (!user) {
       throw new Error("You must be logged in to delete entries.")
@@ -712,9 +696,7 @@ export default function MileageTrackerPage() {
       setEntries([])
 
       const { error } = await supabase.from("mt_entries").delete().eq("userid", user.id)
-      console.log("[v0] Delete all result - error:", error)
       if (error) {
-        console.error("[v0] Delete all error:", error)
         // Revert the optimistic update on error
         const { data: freshEntries } = await supabase
           .from("mt_entries")
@@ -726,9 +708,7 @@ export default function MileageTrackerPage() {
         }
         throw new Error(error.message)
       }
-      console.log("[v0] Successfully deleted all entries")
     } catch (err) {
-      console.error("[v0] Delete all exception:", err)
       // Revert the optimistic update on error
       const { data: freshEntries } = await supabase
         .from("mt_entries")
@@ -751,7 +731,6 @@ export default function MileageTrackerPage() {
 
     if (data) {
       setEntries(data.map(normalizeEntry))
-      console.log("[v0] Manually refreshed entries:", data.length)
     }
   }
 
@@ -901,10 +880,7 @@ export default function MileageTrackerPage() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pl-safe pr-safe py-4 sm:py-8 pb-[calc(env(safe-area-inset-bottom)+5.25rem)] md:pb-safe">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-            <Loader2 className="w-10 h-10 animate-spin mb-4 text-indigo-500" />
-            <p>Loading your tracker data...</p>
-          </div>
+          <LoadingSkeleton />
         ) : activeTab === "tracker" ? (
           <TrackerView
             user={user}
@@ -1181,7 +1157,7 @@ const TrackerView = ({
     [locale],
   )
 
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{ date: string; startPoint: string; stop1: string; stop2: string; stop3: string; stop4: string; finishPoint: string; startPostcode: string; stop1Postcode: string; stop2Postcode: string; stop3Postcode: string; stop4Postcode: string; finishPostcode: string; clientsVisited: string; description: string; totalMiles: string; claimRate: string; chargeRate: string; status: EntryStatus }>({
     date: getTodayLocalDate(),
     startPoint: "",
     stop1: "",
@@ -1523,13 +1499,8 @@ const TrackerView = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log("[v0] ========== FORM SUBMIT START ==========")
-    console.log("[v0] User:", user)
-    console.log("[v0] Form Data:", formData)
-    console.log("[v0] Total Claim:", totalClaim, "Total Charge:", totalCharge)
 
     if (!user) {
-      console.log("[v0] No user - showing toast")
       toast({
         title: "Still connecting",
         description: "Wait for Cloud Connected in the header, then try again.",
@@ -1548,32 +1519,22 @@ const TrackerView = ({
     }
 
     setIsSaving(true)
-    console.log("[v0] Starting save operation...")
 
     try {
       const entryData = { ...formData, totalClaim, totalCharge }
-      console.log("[v0] Entry data to save:", entryData)
 
       if (editingId) {
-        console.log("[v0] Updating entry:", editingId)
         await onUpdateEntry(editingId, entryData)
       } else {
-        console.log("[v0] Adding new entry")
         await onAddEntry(entryData as any)
       }
 
-      console.log("[v0] Save successful, resetting form")
       resetForm()
       toast({
         title: editingId ? "Trip updated" : "Trip saved",
         description: "Your mileage entry is now in your recent trips list.",
       })
-      console.log("[v0] ========== FORM SUBMIT SUCCESS ==========")
     } catch (err: any) {
-      console.error("[v0] ========== FORM SUBMIT ERROR ==========")
-      console.error("[v0] Error object:", err)
-      console.error("[v0] Error message:", err.message)
-      console.error("[v0] Error stack:", err.stack)
       toast({
         title: "Could not save trip",
         description: err.message || "Please check your connection and try again.",
@@ -1688,7 +1649,7 @@ const TrackerView = ({
         )
       }
 
-      setQuickDraft(data)
+      setQuickDraft(data as QuickTripDraft)
       toast({
         title: "Draft parsed",
         description: "Review details, then add it to the table or open it in the form.",
@@ -1856,20 +1817,7 @@ const TrackerView = ({
               Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Everything below is filtered to this period and status.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, -1))}>
-              Previous
-            </Button>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(event) => setSelectedMonth(event.target.value)}
-              className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
-            />
-            <Button variant="secondary" onClick={() => setSelectedMonth((month) => shiftMonth(month, 1))}>
-              Next
-            </Button>
-          </div>
+          <ClaimPeriodSwitcher label={getClaimMonthRangeLabel(selectedMonth)} onPrev={() => setSelectedMonth((month) => shiftMonth(month, -1))} onCurrent={() => setSelectedMonth(getTodayLocalDate().slice(0, 7))} onNext={() => setSelectedMonth((month) => shiftMonth(month, 1))} />
         </div>
         <div className="xl:hidden rounded-3xl bg-indigo-900 p-4 text-white shadow-lg shadow-indigo-100">
           <div className="flex items-start justify-between gap-3">
@@ -1918,7 +1866,8 @@ const TrackerView = ({
       </Card>
 
       {/* Stats Bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
+      <KpiSummary miles={totals.miles.toFixed(1)} reimbursement={formatCurrency(totals.claim)} chargeOut={formatCurrency(totals.charge)} trips={String(monthEntries.length)} />
+      <div className="hidden grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
         <Card className="p-4 flex items-center justify-between bg-white">
           <div>
             <p className="text-slate-500 text-xs sm:text-sm font-medium">{getMonthLabel(selectedMonth)} Miles</p>
@@ -2590,10 +2539,7 @@ const TrackerView = ({
                       <div className="rounded-full bg-indigo-50 p-3">
                         <Navigation className="h-5 w-5 text-indigo-500" />
                       </div>
-                      <p className="font-semibold text-slate-700">No trips recorded yet</p>
-                      <p className="text-sm text-slate-500">
-                        Add your first trip to start seeing mileage totals and report-ready values.
-                      </p>
+                      <EmptyState />
                       <div className="mt-1 flex gap-2">
                         <Button onClick={openTripForm}>
                           <Plus className="w-4 h-4" />
@@ -2668,9 +2614,7 @@ const TrackerView = ({
                           </span>
                         </div>
                         <div className="flex flex-wrap gap-1 pt-1">
-                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${ENTRY_STATUS_CLASSES[entry.status || DEFAULT_ENTRY_STATUS]}`}>
-                            {ENTRY_STATUS_OPTIONS.find((item) => item.value === (entry.status || DEFAULT_ENTRY_STATUS))?.label}
-                          </span>
+                          <StatusBadge status={(entry.status || DEFAULT_ENTRY_STATUS) as EntryStatus} />
                           <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${usesOnlySavedRoutes(entry) ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
                             {usesOnlySavedRoutes(entry) ? "Saved route" : "Manual miles"}
                           </span>
@@ -2755,10 +2699,7 @@ const TrackerView = ({
                 <div className="rounded-full bg-indigo-50 p-3">
                   <Navigation className="h-5 w-5 text-indigo-500" />
                 </div>
-                <p className="font-semibold text-slate-700">No trips recorded yet</p>
-                <p className="text-sm text-slate-500">
-                  Add your first trip to unlock totals and cleaner exports.
-                </p>
+                <EmptyState />
                 <div className="mt-1 flex w-full flex-col gap-2">
                   <Button onClick={openTripForm} className="w-full">
                     <Plus className="w-4 h-4" />
@@ -2792,9 +2733,7 @@ const TrackerView = ({
                         <div className="text-xs font-semibold text-slate-400">Claim value</div>
                       </div>
                       <div className="flex flex-col items-end gap-1">
-                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${ENTRY_STATUS_CLASSES[entry.status || DEFAULT_ENTRY_STATUS]}`}>
-                          {ENTRY_STATUS_OPTIONS.find((item) => item.value === (entry.status || DEFAULT_ENTRY_STATUS))?.label}
-                        </span>
+                        <StatusBadge status={(entry.status || DEFAULT_ENTRY_STATUS) as EntryStatus} />
                         <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${usesOnlySavedRoutes(entry) ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
                           {usesOnlySavedRoutes(entry) ? "Saved route" : "Manual miles"}
                         </span>
