@@ -1,13 +1,8 @@
 import type React from "react"
 import type { Metadata, Viewport } from "next"
-import { Montserrat } from "next/font/google"
 import { Toaster } from "@/components/ui/toaster"
 import "./globals.css"
 
-const montserrat = Montserrat({
-  subsets: ["latin"],
-  variable: "--font-montserrat",
-})
 
 export const metadata: Metadata = {
   title: "Mileage Tracker Pro",
@@ -64,7 +59,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${montserrat.variable} font-sans`}>
+      <body className="font-sans">
         {children}
         <Toaster />
       </body>
