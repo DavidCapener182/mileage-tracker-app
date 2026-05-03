@@ -3,6 +3,7 @@
 import type React from "react"
 
 import { useState, useEffect, useMemo, useRef } from "react"
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
@@ -407,7 +408,7 @@ export default function MileageTrackerPage() {
   useEffect(() => {
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
+    } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
       const currentUser = session?.user || null
       // Only update user if the ID has changed to prevent unnecessary re-renders/fetches
       setUser((prevUser: any) => {
