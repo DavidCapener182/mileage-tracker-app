@@ -20,7 +20,6 @@ type MileageExportEntry = {
   totalClaim: string
   totalCharge: string
   comments?: string
-  status?: string
 }
 
 type MileageExportSheet = {
@@ -58,12 +57,11 @@ const EXPORT_HEADERS = [
   "Claim Value",
   "Charge Rate",
   "Charge Value",
-  "Status",
   "Comments",
 ]
 
 const COLUMN_WIDTHS = [
-  12, 24, 16, 25, 16, 25, 16, 25, 16, 25, 16, 24, 16, 26, 38, 12, 11, 13, 11, 13, 12, 34,
+  13, 23, 18, 30, 18, 30, 18, 30, 18, 30, 18, 24, 18, 34, 52, 13, 12, 14, 12, 14, 42,
 ]
 
 const encoder = new TextEncoder()
@@ -118,7 +116,6 @@ const exportRowForEntry = (entry: MileageExportEntry): ExcelCellValue[] => [
   asNumber(entry.totalClaim),
   asNumber(entry.chargeRate),
   asNumber(entry.totalCharge),
-  clean(entry.status) || "draft",
   clean(entry.comments),
 ]
 
