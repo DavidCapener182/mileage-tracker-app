@@ -255,10 +255,26 @@ const getClaimMonthRangeLabel = (monthKey: string) => {
   return `${formatter.format(start)} - ${formatter.format(end)}`
 }
 
+const getLocalMonthKey = (value: Date) => {
+  const year = value.getFullYear()
+  const month = `${value.getMonth() + 1}`.padStart(2, "0")
+  return `${year}-${month}`
+}
+
+const getClaimMonthKeyForDate = (dateValue: string) => {
+  const parsed = new Date(`${dateValue}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return dateValue.slice(0, 7)
+  if (parsed.getDate() > 23) {
+    parsed.setMonth(parsed.getMonth() + 1)
+  }
+  return getLocalMonthKey(parsed)
+}
+
 const shiftMonth = (monthKey: string, offset: number) => {
   const parsed = new Date(`${monthKey}-01T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return monthKey
   parsed.setMonth(parsed.getMonth() + offset)
-  return parsed.toISOString().slice(0, 7)
+  return getLocalMonthKey(parsed)
 }
 
 const getEntryRoutePostcodes = (entry: Entry) => [
@@ -278,6 +294,8 @@ const getTodayLocalDate = () => {
   const timezoneOffset = now.getTimezoneOffset() * 60000
   return new Date(now.getTime() - timezoneOffset).toISOString().slice(0, 10)
 }
+
+const getCurrentClaimMonthKey = () => getClaimMonthKeyForDate(getTodayLocalDate())
 
 const getQuickAddErrorMessage = (status: number, data: QuickTripErrorResponse) => {
   if (data.code === "AI_TEMPORARILY_UNAVAILABLE" || status === 503) {
@@ -920,7 +938,7 @@ export default function MileageTrackerPage() {
 
 // --- Vehicle Mileage View ---
 const VehicleMileageView = ({ user, entries }: { user: { id: string } | null; entries: Entry[] }) => {
-  const [selectedMonth, setSelectedMonth] = useState(getTodayLocalDate().slice(0, 7))
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentClaimMonthKey)
   const [monthlyStartMileage, setMonthlyStartMileage] = useState("")
   const [currentMileage, setCurrentMileage] = useState("")
   const [monthlyVehicleCost, setMonthlyVehicleCost] = useState("")
@@ -1131,7 +1149,7 @@ const TrackerView = ({
   const [draftAdhocNames, setDraftAdhocNames] = useState<string[]>([])
   const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
   const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
-  const [selectedMonth, setSelectedMonth] = useState(getTodayLocalDate().slice(0, 7))
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentClaimMonthKey)
   const [statusFilter, setStatusFilter] = useState<EntryStatus | "all">("all")
   const [isExportPreviewOpen, setIsExportPreviewOpen] = useState(false)
   const [defaultClaimRate, setDefaultClaimRate] = useState(DEFAULT_CLAIM_RATE)
@@ -1530,7 +1548,7 @@ const TrackerView = ({
       }
 
       if (entryData.date?.length >= 7) {
-        setSelectedMonth(entryData.date.slice(0, 7))
+        setSelectedMonth(getClaimMonthKeyForDate(entryData.date))
       }
       resetForm()
       toast({
@@ -1769,7 +1787,7 @@ const TrackerView = ({
         status: DEFAULT_ENTRY_STATUS,
       })
       if (trip.date?.length >= 7) {
-        setSelectedMonth(trip.date.slice(0, 7))
+        setSelectedMonth(getClaimMonthKeyForDate(trip.date))
       }
       setQuickDraft(null)
       setQuickAddText("")
@@ -1823,7 +1841,7 @@ const TrackerView = ({
               Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Everything below is filtered to this period and status.
             </p>
           </div>
-          <ClaimPeriodSwitcher label={getClaimMonthRangeLabel(selectedMonth)} onPrev={() => setSelectedMonth((month) => shiftMonth(month, -1))} onCurrent={() => setSelectedMonth(getTodayLocalDate().slice(0, 7))} onNext={() => setSelectedMonth((month) => shiftMonth(month, 1))} />
+          <ClaimPeriodSwitcher label={getClaimMonthRangeLabel(selectedMonth)} onPrev={() => setSelectedMonth((month) => shiftMonth(month, -1))} onCurrent={() => setSelectedMonth(getCurrentClaimMonthKey())} onNext={() => setSelectedMonth((month) => shiftMonth(month, 1))} />
         </div>
         <div className="xl:hidden rounded-3xl bg-indigo-900 p-4 text-white shadow-lg shadow-indigo-100">
           <div className="flex items-start justify-between gap-3">
