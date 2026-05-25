@@ -98,6 +98,7 @@ interface Entry {
 }
 
 type EntryStatus = "draft" | "submitted" | "paid"
+type VisitFilter = "all" | "footasylum" | "tfs"
 
 interface QuickTripDraft {
   trip: {
@@ -155,6 +156,12 @@ const ENTRY_STATUS_OPTIONS: Array<{ value: EntryStatus; label: string }> = [
   { value: "draft", label: "Draft" },
   { value: "submitted", label: "Submitted" },
   { value: "paid", label: "Paid" },
+]
+
+const VISIT_FILTER_OPTIONS: Array<{ value: VisitFilter; label: string }> = [
+  { value: "all", label: "All visits" },
+  { value: "footasylum", label: "Footasylum" },
+  { value: "tfs", label: "TFS" },
 ]
 
 const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
@@ -288,6 +295,33 @@ const getEntryRoutePostcodes = (entry: Entry) => [
 
 const getMissingPostcodeCount = (entry: Entry) =>
   getEntryRoutePostcodes(entry).filter((item) => item.point && !item.postcode?.trim()).length
+
+const getEntrySearchText = (entry: Entry) =>
+  [
+    entry.startPoint,
+    entry.stop1,
+    entry.stop2,
+    entry.stop3,
+    entry.stop4,
+    entry.finishPoint,
+    entry.clientsVisited,
+    entry.description,
+    entry.comments,
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+const entryMatchesVisitFilter = (entry: Entry, filter: VisitFilter) => {
+  if (filter === "all") return true
+  const searchText = getEntrySearchText(entry)
+  const normalized = normalizeLocationName(searchText)
+
+  if (filter === "footasylum") {
+    return normalized.includes("footasylum")
+  }
+
+  return /\bTFS\b/i.test(searchText) || normalized.includes("thefragranceshop")
+}
 
 const getTodayLocalDate = () => {
   const now = new Date()
@@ -1150,6 +1184,7 @@ const TrackerView = ({
   const [mobileDetailsEntryId, setMobileDetailsEntryId] = useState<string | null>(null)
   const [newlyAddedEntryIds, setNewlyAddedEntryIds] = useState<Record<string, true>>({})
   const [selectedMonth, setSelectedMonth] = useState(getCurrentClaimMonthKey)
+  const [visitFilter, setVisitFilter] = useState<VisitFilter>("all")
   const [statusFilter, setStatusFilter] = useState<EntryStatus | "all">("all")
   const [isExportPreviewOpen, setIsExportPreviewOpen] = useState(false)
   const [defaultClaimRate, setDefaultClaimRate] = useState(DEFAULT_CLAIM_RATE)
@@ -1414,13 +1449,34 @@ const TrackerView = ({
     () => entries.filter((entry) => isDateInClaimMonth(entry.date, selectedMonth)),
     [entries, selectedMonth],
   )
-  const filteredEntries = useMemo(
-    () => monthEntries.filter((entry) => statusFilter === "all" || (entry.status || DEFAULT_ENTRY_STATUS) === statusFilter),
-    [monthEntries, statusFilter],
+  const visitCounts = useMemo(
+    () =>
+      VISIT_FILTER_OPTIONS.reduce(
+        (acc, option) => {
+          acc[option.value] = monthEntries.filter((entry) => entryMatchesVisitFilter(entry, option.value)).length
+          return acc
+        },
+        {} as Record<VisitFilter, number>,
+      ),
+    [monthEntries],
   )
+  const visitFilteredEntries = useMemo(
+    () => monthEntries.filter((entry) => entryMatchesVisitFilter(entry, visitFilter)),
+    [monthEntries, visitFilter],
+  )
+  const filteredEntries = useMemo(
+    () => visitFilteredEntries.filter((entry) => statusFilter === "all" || (entry.status || DEFAULT_ENTRY_STATUS) === statusFilter),
+    [visitFilteredEntries, statusFilter],
+  )
+  const activeVisitFilterLabel = VISIT_FILTER_OPTIONS.find((item) => item.value === visitFilter)?.label || "All visits"
+  const activeStatusFilterLabel =
+    statusFilter === "all" ? "All statuses" : ENTRY_STATUS_OPTIONS.find((item) => item.value === statusFilter)?.label || statusFilter
+  const exportLabel = [selectedMonth, visitFilter !== "all" ? visitFilter : "", statusFilter !== "all" ? statusFilter : ""]
+    .filter(Boolean)
+    .join("-")
   const totals = useMemo(
     () =>
-      monthEntries.reduce(
+      filteredEntries.reduce(
         (acc, curr) => {
           acc.miles += Number.parseFloat(curr.totalMiles) || 0
           acc.claim += Number.parseFloat(curr.totalClaim) || 0
@@ -1429,15 +1485,15 @@ const TrackerView = ({
         },
         { miles: 0, claim: 0, charge: 0 },
       ),
-    [monthEntries],
+    [filteredEntries],
   )
   const missingPostcodeTrips = useMemo(
-    () => monthEntries.filter((entry) => getMissingPostcodeCount(entry) > 0).length,
-    [monthEntries],
+    () => filteredEntries.filter((entry) => getMissingPostcodeCount(entry) > 0).length,
+    [filteredEntries],
   )
   const recentTemplates = useMemo(() => {
     const seen = new Set<string>()
-    return monthEntries
+    return filteredEntries
       .filter((entry) => entry.startPoint && entry.finishPoint)
       .filter((entry) => {
         const key = [entry.startPoint, entry.stop1, entry.stop2, entry.stop3, entry.stop4, entry.finishPoint].filter(Boolean).join("|")
@@ -1446,7 +1502,7 @@ const TrackerView = ({
         return true
       })
       .slice(0, 4)
-  }, [monthEntries])
+  }, [filteredEntries])
 
   useEffect(() => {
     if (!user?.id || typeof window === "undefined") return
@@ -1838,7 +1894,7 @@ const TrackerView = ({
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-500">Claim Mode</p>
             <h2 className="text-2xl font-black tracking-tight text-slate-900">{getMonthLabel(selectedMonth)}</h2>
             <p className="text-sm text-slate-500">
-              Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Everything below is filtered to this period and status.
+              Claim period: {getClaimMonthRangeLabel(selectedMonth)}. Everything below is filtered to this period, visit tab, and status.
             </p>
           </div>
           <ClaimPeriodSwitcher label={getClaimMonthRangeLabel(selectedMonth)} onPrev={() => setSelectedMonth((month) => shiftMonth(month, -1))} onCurrent={() => setSelectedMonth(getCurrentClaimMonthKey())} onNext={() => setSelectedMonth((month) => shiftMonth(month, 1))} />
@@ -1849,7 +1905,7 @@ const TrackerView = ({
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-200">Monthly Claim</p>
               <p className="mt-1 text-2xl font-black">{getMonthLabel(selectedMonth)}</p>
               <p className="mt-1 text-sm text-indigo-100">
-                {monthEntries.length} trips · {totals.miles.toFixed(1)} miles
+                {filteredEntries.length} trips · {totals.miles.toFixed(1)} miles
               </p>
             </div>
             <div className="rounded-2xl bg-white/10 px-3 py-2 text-right ring-1 ring-white/10">
@@ -1864,9 +1920,26 @@ const TrackerView = ({
             </div>
             <div className="rounded-2xl bg-white/10 px-3 py-2 ring-1 ring-white/10">
               <p className="text-[11px] font-semibold text-indigo-200">Filter</p>
-              <p className="text-lg font-black capitalize">{statusFilter === "all" ? "All" : statusFilter}</p>
+              <p className="text-lg font-black">{activeVisitFilterLabel}</p>
             </div>
           </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {VISIT_FILTER_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setVisitFilter(option.value)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                visitFilter === option.value
+                  ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                  : "border-slate-200 bg-white text-slate-500"
+              }`}
+            >
+              {option.label}
+              <span className="ml-1 text-[10px] opacity-70">{visitCounts[option.value] || 0}</span>
+            </button>
+          ))}
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -1890,7 +1963,7 @@ const TrackerView = ({
       </Card>
 
       {/* Stats Bar */}
-      <KpiSummary miles={totals.miles.toFixed(1)} reimbursement={formatCurrency(totals.claim)} chargeOut={formatCurrency(totals.charge)} trips={String(monthEntries.length)} />
+      <KpiSummary miles={totals.miles.toFixed(1)} reimbursement={formatCurrency(totals.claim)} chargeOut={formatCurrency(totals.charge)} trips={String(filteredEntries.length)} />
       <div className="hidden grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
         <Card className="p-4 flex items-center justify-between bg-white">
           <div>
@@ -1909,7 +1982,7 @@ const TrackerView = ({
         <Card className="p-4 flex items-center justify-between bg-white border-blue-200 border-l-4">
           <div>
             <p className="text-blue-700 text-xs sm:text-sm font-medium">Trips Logged</p>
-            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-600">{monthEntries.length}</p>
+            <p className="text-xl sm:text-2xl md:text-3xl font-bold text-blue-600">{filteredEntries.length}</p>
           </div>
           <FileText className="w-7 h-7 sm:w-8 sm:h-8 text-blue-500 opacity-20" />
         </Card>
@@ -2164,8 +2237,7 @@ const TrackerView = ({
         <div>
           <h2 className="text-base sm:text-lg font-bold text-slate-800">{getMonthLabel(selectedMonth)} Entries</h2>
           <p className="text-xs text-slate-500">
-            Showing {filteredEntries.length} of {monthEntries.length} trips
-            {statusFilter !== "all" ? ` (${ENTRY_STATUS_OPTIONS.find((item) => item.value === statusFilter)?.label})` : ""}
+            Showing {filteredEntries.length} of {monthEntries.length} trips · {activeVisitFilterLabel} · {activeStatusFilterLabel}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:flex-wrap sm:w-auto">
@@ -2184,10 +2256,10 @@ const TrackerView = ({
             variant="secondary"
             onClick={() => setIsExportPreviewOpen(true)}
             className="hidden md:flex w-full sm:w-auto"
-            disabled={monthEntries.length === 0}
+            disabled={filteredEntries.length === 0}
           >
             <Download className="w-4 h-4" />
-            Export Month
+            Export View
           </Button>
           {entries.length > 0 && (
             <Button
@@ -2244,7 +2316,7 @@ const TrackerView = ({
           <button
             type="button"
             onClick={() => setIsExportPreviewOpen(true)}
-            disabled={monthEntries.length === 0}
+            disabled={filteredEntries.length === 0}
             className="flex min-h-[56px] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 disabled:opacity-50"
           >
             <Download className="mb-0.5 h-4 w-4" />
@@ -3053,13 +3125,13 @@ const TrackerView = ({
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-200">Mileage Claim</p>
               <p className="mt-1 text-2xl font-black">{getMonthLabel(selectedMonth)}</p>
               <p className="mt-1 text-sm text-indigo-100">
-                {monthEntries.length} trips · {totals.miles.toFixed(1)} miles
+                {filteredEntries.length} trips · {totals.miles.toFixed(1)} miles · {activeVisitFilterLabel}
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-2xl bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase text-slate-500">Trips</p>
-                <p className="text-lg font-bold text-slate-800">{monthEntries.length}</p>
+                <p className="text-lg font-bold text-slate-800">{filteredEntries.length}</p>
               </div>
               <div className="rounded-2xl bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase text-slate-500">Miles</p>
@@ -3077,9 +3149,9 @@ const TrackerView = ({
           </div>
           <DrawerFooter className="pb-[calc(env(safe-area-inset-bottom)+1rem)]">
             <Button
-              disabled={monthEntries.length === 0}
+              disabled={filteredEntries.length === 0}
               onClick={() => {
-                onExport(monthEntries, selectedMonth)
+                onExport(filteredEntries, exportLabel)
                 setIsExportPreviewOpen(false)
               }}
               className="w-full"
