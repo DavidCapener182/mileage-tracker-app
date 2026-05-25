@@ -5,6 +5,7 @@ import type React from "react"
 import { useState, useEffect, useMemo, useRef } from "react"
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
+import { downloadMileageExcelWorkbook } from "@/lib/mileage/excel-export"
 import { KpiSummary } from "@/components/tracker/kpi-summary"
 import { ClaimPeriodSwitcher } from "@/components/tracker/claim-period-switcher"
 import { StatusBadge } from "@/components/tracker/status-badge"
@@ -208,14 +209,6 @@ const entryToDatabasePayload = (entry: Partial<Entry>) => {
   if ("status" in entry) payload.status = entry.status || DEFAULT_ENTRY_STATUS
 
   return payload
-}
-
-const escapeCsvValue = (value: string | number | undefined) => {
-  const text = String(value ?? "")
-  if (/[",\n]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`
-  }
-  return text
 }
 
 const getMonthLabel = (monthKey: string) => {
@@ -786,73 +779,6 @@ export default function MileageTrackerPage() {
     }
   }
 
-  // --- Import sample data ---
-
-  const exportToCSV = (entriesToExport = entries, label = getTodayLocalDate()) => {
-    const headers = [
-      "Date",
-      "Starting Point",
-      "Starting Postcode",
-      "1st Stop",
-      "1st Stop Postcode",
-      "2nd Stop",
-      "2nd Stop Postcode",
-      "3rd Stop",
-      "3rd Stop Postcode",
-      "4th Stop",
-      "4th Stop Postcode",
-      "Finish Point",
-      "Finish Postcode",
-      "Clients Visited",
-      "Description",
-      "Total Miles",
-      "Claim Rate",
-      "Claim Value",
-      "Charge Rate",
-      "Charge Value",
-      "Status",
-      "Comments",
-    ]
-    const rows = entriesToExport.map((e) => [
-      e.date,
-      e.startPoint, // Changed from e.start_point
-      e.startPostcode || "",
-      e.stop1 || "",
-      e.stop1Postcode || "",
-      e.stop2 || "",
-      e.stop2Postcode || "",
-      e.stop3 || "",
-      e.stop3Postcode || "",
-      e.stop4 || "",
-      e.stop4Postcode || "",
-      e.finishPoint, // Changed from e.finish_point
-      e.finishPostcode || "",
-      e.clientsVisited || "", // Changed from e.clients_visited
-      e.description || "",
-      e.totalMiles, // Changed from e.total_miles
-      e.claimRate, // Changed from e.claim_rate
-      e.totalClaim,
-      e.chargeRate, // Changed from e.charge_rate
-      e.totalCharge,
-      e.status || DEFAULT_ENTRY_STATUS,
-      e.comments || "",
-    ])
-    const csvContent = [headers.map(escapeCsvValue).join(","), ...rows.map((row) => row.map(escapeCsvValue).join(","))].join("\n")
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
-    const link = document.createElement("a")
-    const url = URL.createObjectURL(blob)
-    link.setAttribute("href", url)
-    link.setAttribute("download", `mileage_tracker_export_${label}.csv`)
-    link.style.visibility = "hidden"
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    toast({
-      title: "Export ready",
-      description: "Your mileage CSV has been downloaded.",
-    })
-  }
-
   const handleSignOut = async () => {
     await supabase.auth.signOut()
     router.push("/auth/login")
@@ -943,7 +869,6 @@ export default function MileageTrackerPage() {
             onUpdateEntry={handleUpdateEntry}
             onDeleteEntry={handleDeleteEntry}
             onDeleteAll={handleDeleteAllEntries}
-            onExport={exportToCSV}
             onRefresh={handleRefreshEntries}
             onOpenLocationsTab={() => setActiveTab("locations")}
           />
@@ -1149,7 +1074,6 @@ const TrackerView = ({
   onUpdateEntry,
   onDeleteEntry,
   onDeleteAll,
-  onExport,
   onRefresh,
   onOpenLocationsTab,
 }: {
@@ -1161,7 +1085,6 @@ const TrackerView = ({
   onUpdateEntry: (id: string, data: Partial<Entry>) => Promise<void>
   onDeleteEntry: (id: string) => Promise<void>
   onDeleteAll: () => Promise<void>
-  onExport: (entriesToExport?: Entry[], label?: string) => void
   onRefresh: () => Promise<void>
   onOpenLocationsTab: () => void
 }) => {
@@ -1449,6 +1372,10 @@ const TrackerView = ({
     () => entries.filter((entry) => isDateInClaimMonth(entry.date, selectedMonth)),
     [entries, selectedMonth],
   )
+  const statusFilteredMonthEntries = useMemo(
+    () => monthEntries.filter((entry) => statusFilter === "all" || (entry.status || DEFAULT_ENTRY_STATUS) === statusFilter),
+    [monthEntries, statusFilter],
+  )
   const visitCounts = useMemo(
     () =>
       VISIT_FILTER_OPTIONS.reduce(
@@ -1471,9 +1398,48 @@ const TrackerView = ({
   const activeVisitFilterLabel = VISIT_FILTER_OPTIONS.find((item) => item.value === visitFilter)?.label || "All visits"
   const activeStatusFilterLabel =
     statusFilter === "all" ? "All statuses" : ENTRY_STATUS_OPTIONS.find((item) => item.value === statusFilter)?.label || statusFilter
-  const exportLabel = [selectedMonth, visitFilter !== "all" ? visitFilter : "", statusFilter !== "all" ? statusFilter : ""]
+  const exportLabel = [selectedMonth, statusFilter !== "all" ? statusFilter : ""]
     .filter(Boolean)
     .join("-")
+  const exportVisitCounts = useMemo(
+    () =>
+      VISIT_FILTER_OPTIONS.reduce(
+        (acc, option) => {
+          acc[option.value] = statusFilteredMonthEntries.filter((entry) => entryMatchesVisitFilter(entry, option.value)).length
+          return acc
+        },
+        {} as Record<VisitFilter, number>,
+      ),
+    [statusFilteredMonthEntries],
+  )
+  const exportTotals = useMemo(
+    () =>
+      statusFilteredMonthEntries.reduce(
+        (acc, curr) => {
+          acc.miles += Number.parseFloat(curr.totalMiles) || 0
+          acc.claim += Number.parseFloat(curr.totalClaim) || 0
+          acc.charge += Number.parseFloat(curr.totalCharge) || 0
+          return acc
+        },
+        { miles: 0, claim: 0, charge: 0 },
+      ),
+    [statusFilteredMonthEntries],
+  )
+  const handleExportExcel = () => {
+    downloadMileageExcelWorkbook({
+      title: `${getMonthLabel(selectedMonth)} Mileage Claim`,
+      claimPeriodLabel: getClaimMonthRangeLabel(selectedMonth),
+      fileName: `mileage_tracker_export_${exportLabel}.xlsx`,
+      sheets: VISIT_FILTER_OPTIONS.map((option) => ({
+        name: option.label,
+        entries: statusFilteredMonthEntries.filter((entry) => entryMatchesVisitFilter(entry, option.value)),
+      })),
+    })
+    toast({
+      title: "Export ready",
+      description: "Your Excel workbook has been downloaded with All visits, Footasylum, and TFS tabs.",
+    })
+  }
   const totals = useMemo(
     () =>
       filteredEntries.reduce(
@@ -1490,6 +1456,10 @@ const TrackerView = ({
   const missingPostcodeTrips = useMemo(
     () => filteredEntries.filter((entry) => getMissingPostcodeCount(entry) > 0).length,
     [filteredEntries],
+  )
+  const exportMissingPostcodeTrips = useMemo(
+    () => statusFilteredMonthEntries.filter((entry) => getMissingPostcodeCount(entry) > 0).length,
+    [statusFilteredMonthEntries],
   )
   const recentTemplates = useMemo(() => {
     const seen = new Set<string>()
@@ -2256,10 +2226,10 @@ const TrackerView = ({
             variant="secondary"
             onClick={() => setIsExportPreviewOpen(true)}
             className="hidden md:flex w-full sm:w-auto"
-            disabled={filteredEntries.length === 0}
+            disabled={statusFilteredMonthEntries.length === 0}
           >
             <Download className="w-4 h-4" />
-            Export View
+            Export Excel
           </Button>
           {entries.length > 0 && (
             <Button
@@ -2316,11 +2286,11 @@ const TrackerView = ({
           <button
             type="button"
             onClick={() => setIsExportPreviewOpen(true)}
-            disabled={filteredEntries.length === 0}
+            disabled={statusFilteredMonthEntries.length === 0}
             className="flex min-h-[56px] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 disabled:opacity-50"
           >
             <Download className="mb-0.5 h-4 w-4" />
-            Export
+            Excel
           </button>
           <button
             type="button"
@@ -3117,47 +3087,53 @@ const TrackerView = ({
       <Drawer open={isExportPreviewOpen} onOpenChange={setIsExportPreviewOpen}>
         <DrawerContent className="mx-auto max-h-[90vh] max-w-lg">
           <DrawerHeader className="text-left">
-            <DrawerTitle>{getMonthLabel(selectedMonth)} Claim Preview</DrawerTitle>
-            <DrawerDescription>Check the claim totals before downloading your CSV.</DrawerDescription>
+            <DrawerTitle>{getMonthLabel(selectedMonth)} Excel Preview</DrawerTitle>
+            <DrawerDescription>Download one Excel workbook with All visits, Footasylum, and TFS tabs.</DrawerDescription>
           </DrawerHeader>
           <div className="space-y-4 px-4 pb-4">
             <div className="rounded-3xl bg-indigo-900 p-4 text-white">
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-200">Mileage Claim</p>
               <p className="mt-1 text-2xl font-black">{getMonthLabel(selectedMonth)}</p>
               <p className="mt-1 text-sm text-indigo-100">
-                {filteredEntries.length} trips · {totals.miles.toFixed(1)} miles · {activeVisitFilterLabel}
+                {statusFilteredMonthEntries.length} trips · {exportTotals.miles.toFixed(1)} miles · 3 Excel tabs
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-2xl bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase text-slate-500">Trips</p>
-                <p className="text-lg font-bold text-slate-800">{filteredEntries.length}</p>
+                <p className="text-lg font-bold text-slate-800">{statusFilteredMonthEntries.length}</p>
               </div>
               <div className="rounded-2xl bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase text-slate-500">Miles</p>
-                <p className="text-lg font-bold text-slate-800">{totals.miles.toFixed(1)}</p>
+                <p className="text-lg font-bold text-slate-800">{exportTotals.miles.toFixed(1)}</p>
               </div>
               <div className="rounded-2xl bg-emerald-50 p-3">
                 <p className="text-xs font-semibold uppercase text-emerald-700">Claim</p>
-                <p className="text-lg font-bold text-emerald-700">{formatCurrency(totals.claim)}</p>
+                <p className="text-lg font-bold text-emerald-700">{formatCurrency(exportTotals.claim)}</p>
               </div>
               <div className="rounded-2xl bg-amber-50 p-3">
                 <p className="text-xs font-semibold uppercase text-amber-700">Missing Postcodes</p>
-                <p className="text-lg font-bold text-amber-700">{missingPostcodeTrips}</p>
+                <p className="text-lg font-bold text-amber-700">{exportMissingPostcodeTrips}</p>
               </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-600">
+              <p className="font-semibold text-slate-800">Workbook tabs</p>
+              <p className="mt-1">
+                All visits ({exportVisitCounts.all}) · Footasylum ({exportVisitCounts.footasylum}) · TFS ({exportVisitCounts.tfs})
+              </p>
             </div>
           </div>
           <DrawerFooter className="pb-[calc(env(safe-area-inset-bottom)+1rem)]">
             <Button
-              disabled={filteredEntries.length === 0}
+              disabled={statusFilteredMonthEntries.length === 0}
               onClick={() => {
-                onExport(filteredEntries, exportLabel)
+                handleExportExcel()
                 setIsExportPreviewOpen(false)
               }}
               className="w-full"
             >
               <Download className="h-4 w-4" />
-              Export CSV
+              Export Excel
             </Button>
             <DrawerClose asChild>
               <Button variant="secondary">Cancel</Button>
