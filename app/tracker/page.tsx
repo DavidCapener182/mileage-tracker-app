@@ -1529,6 +1529,9 @@ const TrackerView = ({
         await onAddEntry(entryData as any)
       }
 
+      if (entryData.date?.length >= 7) {
+        setSelectedMonth(entryData.date.slice(0, 7))
+      }
       resetForm()
       toast({
         title: editingId ? "Trip updated" : "Trip saved",
@@ -1765,6 +1768,9 @@ const TrackerView = ({
         totalCharge,
         status: DEFAULT_ENTRY_STATUS,
       })
+      if (trip.date?.length >= 7) {
+        setSelectedMonth(trip.date.slice(0, 7))
+      }
       setQuickDraft(null)
       setQuickAddText("")
       toast({
