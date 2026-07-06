@@ -173,6 +173,8 @@ const ENTRY_STATUS_CLASSES: Record<EntryStatus, string> = {
 
 const normalizeLocationName = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "")
 const normalizePostcode = (value: string | undefined) => (value || "").trim().toUpperCase()
+const UK_POSTCODE_REGEX = /\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i
+const extractUKPostcode = (value: string | undefined) => normalizePostcode(value?.match(UK_POSTCODE_REGEX)?.[0])
 
 const normalizeEntry = (entry: any): Entry => ({
   ...entry,
@@ -330,6 +332,45 @@ const getQuickAddErrorMessage = (status: number, data: QuickTripErrorResponse) =
   }
 
   return data.error || "Could not parse trip note."
+}
+
+const milesForClaimAmount = (claimAmount: string, claimRate: string) => {
+  const parsedClaim = Number.parseFloat(claimAmount)
+  const parsedRate = Number.parseFloat(claimRate)
+
+  if (!Number.isFinite(parsedClaim) || parsedClaim < 0 || !Number.isFinite(parsedRate) || parsedRate <= 0) {
+    return null
+  }
+
+  return (parsedClaim / parsedRate).toFixed(2)
+}
+
+const getResolvedLocationAddressParts = (name: string, resolvedAddress: string | undefined, postcode: string) => {
+  const cleanedAddress = (resolvedAddress || "").replace(/,\s*UK$/i, "").trim()
+  const addressWithoutPostcode = cleanedAddress
+    .replace(UK_POSTCODE_REGEX, "")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/\s{2,}/g, " ")
+    .replace(/,\s*$/, "")
+    .trim()
+
+  const parts = addressWithoutPostcode
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  if (parts.length >= 2) {
+    return {
+      address: parts.slice(0, -1).join(", "),
+      city: parts[parts.length - 1],
+    }
+  }
+
+  return {
+    address: parts[0] || name,
+    city: postcode ? "" : parts[1] || "",
+  }
 }
 
 // --- UI Components ---
@@ -865,6 +906,7 @@ export default function MileageTrackerPage() {
             locations={locations}
             savedRoutes={savedRoutes}
             entries={entries}
+            onAddLocation={handleAddLocation}
             onAddEntry={handleAddEntry}
             onUpdateEntry={handleUpdateEntry}
             onDeleteEntry={handleDeleteEntry}
@@ -1070,6 +1112,7 @@ const TrackerView = ({
   locations,
   savedRoutes,
   entries,
+  onAddLocation,
   onAddEntry,
   onUpdateEntry,
   onDeleteEntry,
@@ -1081,6 +1124,7 @@ const TrackerView = ({
   locations: Location[]
   savedRoutes: SavedRoute[]
   entries: Entry[]
+  onAddLocation: (loc: Omit<Location, "id">) => Promise<void>
   onAddEntry: (entry: Omit<Entry, "id" | "createdat">) => Promise<void> // Changed from created_at to createdat
   onUpdateEntry: (id: string, data: Partial<Entry>) => Promise<void>
   onDeleteEntry: (id: string) => Promise<void>
@@ -1113,6 +1157,7 @@ const TrackerView = ({
   const [defaultClaimRate, setDefaultClaimRate] = useState(DEFAULT_CLAIM_RATE)
   const [defaultChargeRate, setDefaultChargeRate] = useState(DEFAULT_CHARGE_RATE)
   const previousEntryIdsRef = useRef<Set<string>>(new Set())
+  const savedParsedLocationNamesRef = useRef<Set<string>>(new Set())
   const locale = useMemo(() => (typeof navigator !== "undefined" ? navigator.language : "en-GB"), [])
   const dateFormatter = useMemo(
     () =>
@@ -1156,6 +1201,7 @@ const TrackerView = ({
   })
 
   const [legDistances, setLegDistances] = useState<Record<string, string>>({})
+  const [claimAmountDraft, setClaimAmountDraft] = useState<string | null>(null)
 
   const resetForm = () => {
     setFormData({
@@ -1180,6 +1226,7 @@ const TrackerView = ({
       status: DEFAULT_ENTRY_STATUS,
     })
     setLegDistances({})
+    setClaimAmountDraft(null)
     setDraftAdhocNames([])
     setEditingId(null)
     setIsFormOpen(false)
@@ -1187,6 +1234,7 @@ const TrackerView = ({
 
   const handleEditClick = (entry: Entry) => {
     setMobileDetailsEntryId(null)
+    setClaimAmountDraft(null)
     setFormData({
       date: entry.date,
       startPoint: entry.startPoint,
@@ -1236,9 +1284,27 @@ const TrackerView = ({
       [postcodeField]: getPostcodeForLocation(value),
     }))
   }
+  const updateManualRoutePoint = (
+    pointField: "startPoint" | "stop1" | "stop2" | "stop3" | "stop4" | "finishPoint",
+    postcodeField:
+      | "startPostcode"
+      | "stop1Postcode"
+      | "stop2Postcode"
+      | "stop3Postcode"
+      | "stop4Postcode"
+      | "finishPostcode",
+    value: string,
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      [pointField]: value,
+      ...(value.trim() ? {} : { [postcodeField]: "" }),
+    }))
+  }
 
   const duplicateEntry = (entry: Entry) => {
     setMobileDetailsEntryId(null)
+    setClaimAmountDraft(null)
     setFormData({
       date: getTodayLocalDate(),
       startPoint: entry.startPoint,
@@ -1288,8 +1354,11 @@ const TrackerView = ({
 
   const legs = getRouteLegs()
   const hasMultipleLegs = legs.length > 0
+  const shouldShowRouteBreakdown = !editingId && hasMultipleLegs
 
   useEffect(() => {
+    if (editingId) return
+
     const newLegDistances = { ...legDistances }
     let hasChanges = false
     let newTotal = 0
@@ -1312,6 +1381,7 @@ const TrackerView = ({
 
     if (hasChanges) {
       setLegDistances(newLegDistances)
+      setClaimAmountDraft(null)
       setFormData((prev) => ({ ...prev, totalMiles: newTotal > 0 ? newTotal.toString() : "" }))
     } else {
       let currentTotal = 0
@@ -1322,6 +1392,7 @@ const TrackerView = ({
       })
 
       if (currentTotal.toString() !== formData.totalMiles && currentTotal > 0) {
+        setClaimAmountDraft(null)
         setFormData((prev) => ({ ...prev, totalMiles: currentTotal.toString() }))
       }
     }
@@ -1333,10 +1404,12 @@ const TrackerView = ({
     formData.stop4,
     formData.finishPoint,
     savedRoutes,
+    editingId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ])
 
   const handleLegChange = (id: string, value: string) => {
+    setClaimAmountDraft(null)
     const newLegs = { ...legDistances, [id]: value }
     setLegDistances(newLegs)
     let total = 0
@@ -1345,6 +1418,33 @@ const TrackerView = ({
       total += Number.parseFloat(val) || 0
     })
     setFormData((prev) => ({ ...prev, totalMiles: total > 0 ? total.toString() : "" }))
+  }
+
+  const handleTotalMilesChange = (value: string) => {
+    setClaimAmountDraft(null)
+    setFormData((prev) => ({ ...prev, totalMiles: value }))
+  }
+
+  const handleClaimRateChange = (value: string) => {
+    setFormData((prev) => {
+      const next = { ...prev, claimRate: value }
+      if (claimAmountDraft !== null) {
+        const adjustedMiles = milesForClaimAmount(claimAmountDraft, value)
+        if (adjustedMiles !== null) {
+          next.totalMiles = adjustedMiles
+        }
+      }
+      return next
+    })
+  }
+
+  const handleClaimAmountChange = (value: string) => {
+    setClaimAmountDraft(value)
+    const adjustedMiles = milesForClaimAmount(value, formData.claimRate)
+
+    if (adjustedMiles !== null) {
+      setFormData((prev) => ({ ...prev, totalMiles: adjustedMiles }))
+    }
   }
 
   const totalClaim = (
@@ -1565,6 +1665,8 @@ const TrackerView = ({
     setIsSaving(true)
 
     try {
+      const savedLocationCount =
+        !editingId && quickDraft ? await saveParsedAdhocLocations(quickDraft, getCurrentFormRoutePointNames()) : 0
       const entryData = { ...formData, totalClaim, totalCharge }
 
       if (editingId) {
@@ -1579,7 +1681,10 @@ const TrackerView = ({
       resetForm()
       toast({
         title: editingId ? "Trip updated" : "Trip saved",
-        description: "Your mileage entry is now in your recent trips list.",
+        description:
+          savedLocationCount > 0
+            ? `Your trip was saved, and ${savedLocationCount} parsed location${savedLocationCount === 1 ? "" : "s"} added.`
+            : "Your mileage entry is now in your recent trips list.",
       })
     } catch (err: any) {
       toast({
@@ -1737,9 +1842,99 @@ const TrackerView = ({
     return result
   }
 
-  const applyQuickDraftToForm = () => {
+  const getQuickDraftRoutePoints = (trip: QuickTripDraft["trip"]) =>
+    [
+      { name: trip.startPoint, postcode: trip.startPostcode },
+      { name: trip.stop1, postcode: trip.stop1Postcode },
+      { name: trip.stop2, postcode: trip.stop2Postcode },
+      { name: trip.stop3, postcode: trip.stop3Postcode },
+      { name: trip.stop4, postcode: trip.stop4Postcode },
+      { name: trip.finishPoint, postcode: trip.finishPostcode },
+    ]
+      .map((point) => ({
+        name: (point.name || "").trim(),
+        postcode: normalizePostcode(point.postcode),
+      }))
+      .filter((point) => point.name)
+
+  const getCurrentFormRoutePointNames = () =>
+    [formData.startPoint, formData.stop1, formData.stop2, formData.stop3, formData.stop4, formData.finishPoint]
+      .map((name) => name.trim())
+      .filter(Boolean)
+
+  const getResolvedAddressForDraftLocation = (draft: QuickTripDraft, name: string) => {
+    const resolvedAddresses = draft.metadata.resolvedAddresses || {}
+    const exact = resolvedAddresses[name]
+    if (exact) return exact
+
+    const normalizedName = normalizeLocationName(name)
+    const matchedKey = Object.keys(resolvedAddresses).find((key) => normalizeLocationName(key) === normalizedName)
+    return matchedKey ? resolvedAddresses[matchedKey] : undefined
+  }
+
+  const saveParsedAdhocLocations = async (draft: QuickTripDraft, activePointNames?: string[]) => {
+    if (!user) throw new Error("Not authenticated")
+
+    const activeNames = activePointNames
+      ? new Set(activePointNames.map((name) => normalizeLocationName(name)).filter(Boolean))
+      : null
+    const routePoints = getQuickDraftRoutePoints(draft.trip)
+    const existingNames = new Set([
+      ...locations.map((location) => normalizeLocationName(location.name)).filter(Boolean),
+      ...Array.from(savedParsedLocationNamesRef.current),
+    ])
+    const rowsToSave: Array<Omit<Location, "id"> & { normalizedName: string }> = []
+
+    for (const rawName of draft.adhocLocations || []) {
+      const name = rawName.trim()
+      const normalizedName = normalizeLocationName(name)
+      if (!name || !normalizedName || existingNames.has(normalizedName)) continue
+      if (activeNames && !activeNames.has(normalizedName)) continue
+
+      const routePoint = routePoints.find((point) => normalizeLocationName(point.name) === normalizedName)
+      const resolvedAddress = getResolvedAddressForDraftLocation(draft, name)
+      const postcode = routePoint?.postcode || extractUKPostcode(resolvedAddress)
+      if (!postcode) continue
+
+      const { address, city } = getResolvedLocationAddressParts(name, resolvedAddress, postcode)
+      rowsToSave.push({
+        name,
+        address,
+        city,
+        postcode,
+        category: "Venue",
+        normalizedName,
+      })
+      existingNames.add(normalizedName)
+    }
+
+    for (const { normalizedName, ...row } of rowsToSave) {
+      await onAddLocation(row)
+      savedParsedLocationNamesRef.current.add(normalizedName)
+    }
+
+    return rowsToSave.length
+  }
+
+  const applyQuickDraftToForm = async () => {
     if (!quickDraft) return
     const trip = quickDraft.trip
+
+    try {
+      const savedCount = await saveParsedAdhocLocations(quickDraft)
+      if (savedCount > 0) {
+        toast({
+          title: "Parsed locations saved",
+          description: `${savedCount} location${savedCount === 1 ? "" : "s"} added to saved locations.`,
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Could not save parsed locations",
+        description: error instanceof Error ? error.message : "The draft can still be reviewed.",
+        variant: "destructive",
+      })
+    }
 
     setDraftAdhocNames(quickDraft.adhocLocations || [])
     setFormData({
@@ -1789,6 +1984,7 @@ const TrackerView = ({
     const totalCharge = (Number.parseFloat(totalMiles) * Number.parseFloat(chargeRate)).toFixed(2)
 
     try {
+      const savedLocationCount = await saveParsedAdhocLocations(quickDraft)
       await onAddEntry({
         date: trip.date,
         startPoint: trip.startPoint,
@@ -1819,7 +2015,10 @@ const TrackerView = ({
       setQuickAddText("")
       toast({
         title: "Trip added",
-        description: "AI draft was added directly to your entries.",
+        description:
+          savedLocationCount > 0
+            ? `AI draft was added, and ${savedLocationCount} parsed location${savedLocationCount === 1 ? "" : "s"} saved.`
+            : "AI draft was added directly to your entries.",
       })
     } catch (error) {
       toast({
@@ -2338,7 +2537,11 @@ const TrackerView = ({
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">1</span>
                 <div>
                   <p className="font-bold text-slate-800">Journey</p>
-                  <p className="text-xs text-slate-500">Pick the route points; postcodes fill automatically from saved locations.</p>
+                  <p className="text-xs text-slate-500">
+                    {editingId
+                      ? "Edit the parsed route text and postcode snapshots."
+                      : "Pick the route points; postcodes fill automatically from saved locations."}
+                  </p>
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2348,18 +2551,34 @@ const TrackerView = ({
                   value={formData.date}
                   onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                 />
-                <Select
-                  label="Start"
-                  options={locationOptions}
-                  value={formData.startPoint}
-                  onChange={(e) => updateRoutePoint("startPoint", "startPostcode", e.target.value)}
-                />
-                <Select
-                  label="Finish"
-                  options={locationOptions}
-                  value={formData.finishPoint}
-                  onChange={(e) => updateRoutePoint("finishPoint", "finishPostcode", e.target.value)}
-                />
+                {editingId ? (
+                  <Input
+                    label="Start"
+                    value={formData.startPoint}
+                    onChange={(e) => updateManualRoutePoint("startPoint", "startPostcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="Start"
+                    options={locationOptions}
+                    value={formData.startPoint}
+                    onChange={(e) => updateRoutePoint("startPoint", "startPostcode", e.target.value)}
+                  />
+                )}
+                {editingId ? (
+                  <Input
+                    label="Finish"
+                    value={formData.finishPoint}
+                    onChange={(e) => updateManualRoutePoint("finishPoint", "finishPostcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="Finish"
+                    options={locationOptions}
+                    value={formData.finishPoint}
+                    onChange={(e) => updateRoutePoint("finishPoint", "finishPostcode", e.target.value)}
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2387,34 +2606,70 @@ const TrackerView = ({
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <Select
-                  label="1st Stop"
-                  placeholder="None"
-                  options={locationOptions}
-                  value={formData.stop1}
-                  onChange={(e) => updateRoutePoint("stop1", "stop1Postcode", e.target.value)}
-                />
-                <Select
-                  label="2nd Stop"
-                  placeholder="None"
-                  options={locationOptions}
-                  value={formData.stop2}
-                  onChange={(e) => updateRoutePoint("stop2", "stop2Postcode", e.target.value)}
-                />
-                <Select
-                  label="3rd Stop"
-                  placeholder="None"
-                  options={locationOptions}
-                  value={formData.stop3}
-                  onChange={(e) => updateRoutePoint("stop3", "stop3Postcode", e.target.value)}
-                />
-                <Select
-                  label="4th Stop"
-                  placeholder="None"
-                  options={locationOptions}
-                  value={formData.stop4}
-                  onChange={(e) => updateRoutePoint("stop4", "stop4Postcode", e.target.value)}
-                />
+                {editingId ? (
+                  <Input
+                    label="1st Stop"
+                    placeholder="None"
+                    value={formData.stop1}
+                    onChange={(e) => updateManualRoutePoint("stop1", "stop1Postcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="1st Stop"
+                    placeholder="None"
+                    options={locationOptions}
+                    value={formData.stop1}
+                    onChange={(e) => updateRoutePoint("stop1", "stop1Postcode", e.target.value)}
+                  />
+                )}
+                {editingId ? (
+                  <Input
+                    label="2nd Stop"
+                    placeholder="None"
+                    value={formData.stop2}
+                    onChange={(e) => updateManualRoutePoint("stop2", "stop2Postcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="2nd Stop"
+                    placeholder="None"
+                    options={locationOptions}
+                    value={formData.stop2}
+                    onChange={(e) => updateRoutePoint("stop2", "stop2Postcode", e.target.value)}
+                  />
+                )}
+                {editingId ? (
+                  <Input
+                    label="3rd Stop"
+                    placeholder="None"
+                    value={formData.stop3}
+                    onChange={(e) => updateManualRoutePoint("stop3", "stop3Postcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="3rd Stop"
+                    placeholder="None"
+                    options={locationOptions}
+                    value={formData.stop3}
+                    onChange={(e) => updateRoutePoint("stop3", "stop3Postcode", e.target.value)}
+                  />
+                )}
+                {editingId ? (
+                  <Input
+                    label="4th Stop"
+                    placeholder="None"
+                    value={formData.stop4}
+                    onChange={(e) => updateManualRoutePoint("stop4", "stop4Postcode", e.target.value)}
+                  />
+                ) : (
+                  <Select
+                    label="4th Stop"
+                    placeholder="None"
+                    options={locationOptions}
+                    value={formData.stop4}
+                    onChange={(e) => updateRoutePoint("stop4", "stop4Postcode", e.target.value)}
+                  />
+                )}
               </div>
               {(formData.stop1 || formData.stop2 || formData.stop3 || formData.stop4) && (
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -2450,7 +2705,7 @@ const TrackerView = ({
               )}
             </div>
 
-            {hasMultipleLegs && (
+            {shouldShowRouteBreakdown && (
               <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100">
                 <div className="text-xs font-bold text-indigo-800 uppercase tracking-wider mb-3 flex items-center gap-2">
                   <Navigation className="w-3 h-3" /> Route Breakdown (Auto-fills from Saved Routes)
@@ -2509,7 +2764,11 @@ const TrackerView = ({
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">4</span>
                 <div>
                   <p className="font-bold text-slate-800">Mileage & Claim</p>
-                  <p className="text-xs text-slate-500">Saved routes auto-fill miles; you can override any leg.</p>
+                  <p className="text-xs text-slate-500">
+                    {editingId
+                      ? "Adjust the parsed miles directly, or enter a claim amount to back-calculate miles."
+                      : "Saved routes auto-fill miles; you can override any leg."}
+                  </p>
                 </div>
               </div>
               <div className="md:col-span-3">
@@ -2520,7 +2779,7 @@ const TrackerView = ({
                       type="number"
                       placeholder="0.0"
                       value={formData.totalMiles}
-                      onChange={(e) => setFormData({ ...formData, totalMiles: e.target.value })}
+                      onChange={(e) => handleTotalMilesChange(e.target.value)}
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg font-bold"
                     />
                   </div>
@@ -2531,12 +2790,23 @@ const TrackerView = ({
                   type="number"
                   label={`Claim Rate (${DEFAULT_CURRENCY})`}
                   value={formData.claimRate}
-                  onChange={(e) => setFormData({ ...formData, claimRate: e.target.value })}
+                  onChange={(e) => handleClaimRateChange(e.target.value)}
                 />
               </div>
-              <div className="md:col-span-2 pb-2">
-                <div className="text-xl font-bold text-emerald-600">{formatCurrency(totalClaim)}</div>
-                <div className="text-[10px] text-emerald-700 uppercase font-bold">Claimable</div>
+              <div className="md:col-span-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">Claim Amount</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    value={claimAmountDraft ?? totalClaim}
+                    onChange={(e) => handleClaimAmountChange(e.target.value)}
+                    onBlur={() => setClaimAmountDraft(null)}
+                    className="w-full px-3 py-2 bg-white border border-emerald-200 rounded-lg font-bold text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
               </div>
               <div className="md:col-span-2">
                 <Input
