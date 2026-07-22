@@ -3,8 +3,8 @@ export const getClaimMonthDateRange = (monthKey: string) => {
   if (Number.isNaN(parsed.getTime())) return null
   const year = parsed.getFullYear()
   const monthIndex = parsed.getMonth()
-  const start = new Date(year, monthIndex - 1, 23)
-  const end = new Date(year, monthIndex, 23)
+  const start = new Date(year, monthIndex - 1, 21)
+  const end = new Date(year, monthIndex, 21)
   const toDateKey = (value: Date) => {
     const month = `${value.getMonth() + 1}`.padStart(2, "0")
     const day = `${value.getDate()}`.padStart(2, "0")

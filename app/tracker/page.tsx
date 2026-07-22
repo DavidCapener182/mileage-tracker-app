@@ -225,9 +225,9 @@ const getClaimMonthDateRange = (monthKey: string) => {
 
   const year = parsed.getFullYear()
   const monthIndex = parsed.getMonth()
-  // Claim month runs from the 23rd of the previous calendar month to the 23rd of this month.
-  const start = new Date(year, monthIndex - 1, 23)
-  const end = new Date(year, monthIndex, 23)
+  // Claim month runs from the 21st of the previous calendar month to the 21st of this month.
+  const start = new Date(year, monthIndex - 1, 21)
+  const end = new Date(year, monthIndex, 21)
 
   const toDateKey = (value: Date) => {
     const month = `${value.getMonth() + 1}`.padStart(2, "0")
@@ -266,7 +266,7 @@ const getLocalMonthKey = (value: Date) => {
 const getClaimMonthKeyForDate = (dateValue: string) => {
   const parsed = new Date(`${dateValue}T00:00:00`)
   if (Number.isNaN(parsed.getTime())) return dateValue.slice(0, 7)
-  if (parsed.getDate() > 23) {
+  if (parsed.getDate() > 21) {
     parsed.setMonth(parsed.getMonth() + 1)
   }
   return getLocalMonthKey(parsed)
