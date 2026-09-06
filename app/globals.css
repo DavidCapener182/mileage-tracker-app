@@ -130,6 +130,15 @@
     padding-top: max(1rem, env(safe-area-inset-top));
   }
 
+  /* Match the header's sm layout breakpoint; keep the inset on its opaque shell. */
+  @media (width < 40rem) {
+    .tracker-header {
+      padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+  }
+
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom);
   }

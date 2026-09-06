@@ -827,9 +827,9 @@ export default function MileageTrackerPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      <div className="sticky top-0 z-50 bg-indigo-900 text-white shadow-lg pt-safe-or-4">
+      <div className="tracker-header sticky top-0 z-50 bg-indigo-900 text-white shadow-lg pt-safe-or-4">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pl-safe pr-safe">
-          <div className="py-3 sm:py-4">
+          <div className="pb-3 sm:py-4">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="bg-white/10 p-1.5 rounded-lg shrink-0">
