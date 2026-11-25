@@ -5,6 +5,7 @@ import type React from "react"
 import { useState, useEffect, useMemo, useRef } from "react"
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
+import { CLAIM_RATE_HELP, DEFAULT_CLAIM_RATE, claimForMiles, parseClaimRate } from "@/lib/mileage/claim-rate"
 import { downloadMileageExcelWorkbook } from "@/lib/mileage/excel-export"
 import { KpiSummary } from "@/components/tracker/kpi-summary"
 import { ClaimPeriodSwitcher } from "@/components/tracker/claim-period-switcher"
@@ -146,7 +147,6 @@ interface QuickTripErrorResponse {
 }
 
 // --- Constants ---
-const DEFAULT_CLAIM_RATE = "0.14"
 const DEFAULT_CHARGE_RATE = "0.25"
 const DEFAULT_CURRENCY = "GBP"
 const DEFAULT_ENTRY_STATUS: EntryStatus = "draft"
@@ -336,9 +336,9 @@ const getQuickAddErrorMessage = (status: number, data: QuickTripErrorResponse) =
 
 const milesForClaimAmount = (claimAmount: string, claimRate: string) => {
   const parsedClaim = Number.parseFloat(claimAmount)
-  const parsedRate = Number.parseFloat(claimRate)
+  const parsedRate = parseClaimRate(claimRate)
 
-  if (!Number.isFinite(parsedClaim) || parsedClaim < 0 || !Number.isFinite(parsedRate) || parsedRate <= 0) {
+  if (!Number.isFinite(parsedClaim) || parsedClaim < 0 || parsedRate === null || parsedRate <= 0) {
     return null
   }
 
@@ -422,6 +422,8 @@ const Input = ({
   onChange,
   type = "text",
   placeholder,
+  inputMode,
+  error,
   className = "",
 }: {
   label?: string
@@ -429,17 +431,23 @@ const Input = ({
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
   type?: string
   placeholder?: string
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"]
+  error?: string
   className?: string
 }) => (
   <div className={`flex flex-col gap-1 ${className}`}>
     {label && <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{label}</label>}
     <input
       type={type}
+      inputMode={inputMode}
+      aria-label={label}
+      aria-invalid={Boolean(error)}
       value={value}
       onChange={onChange}
       placeholder={placeholder}
       className="w-full px-3 py-2.5 text-base bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-slate-700 min-h-[44px]"
     />
+    {error && <p className="text-xs text-red-700" role="alert">{error}</p>}
   </div>
 )
 
@@ -1447,9 +1455,7 @@ const TrackerView = ({
     }
   }
 
-  const totalClaim = (
-    Number.parseFloat(formData.totalMiles || "0") * Number.parseFloat(formData.claimRate || "0")
-  ).toFixed(2)
+  const totalClaim = claimForMiles(formData.totalMiles, formData.claimRate)
   const totalCharge = (
     Number.parseFloat(formData.totalMiles || "0") * Number.parseFloat(formData.chargeRate || "0")
   ).toFixed(2)
@@ -1584,7 +1590,9 @@ const TrackerView = ({
         defaultClaimRate?: string
         defaultChargeRate?: string
       }
-      if (parsed.defaultClaimRate) setDefaultClaimRate(parsed.defaultClaimRate)
+      if (typeof parsed.defaultClaimRate === "string" && parseClaimRate(parsed.defaultClaimRate) !== null) {
+        setDefaultClaimRate(parsed.defaultClaimRate)
+      }
       if (parsed.defaultChargeRate) setDefaultChargeRate(parsed.defaultChargeRate)
     } catch {
       // Ignore malformed localStorage and keep built-in defaults.
@@ -1595,7 +1603,10 @@ const TrackerView = ({
     if (!user?.id || typeof window === "undefined") return
     window.localStorage.setItem(
       `mileage-settings:${user.id}`,
-      JSON.stringify({ defaultClaimRate, defaultChargeRate }),
+      JSON.stringify({
+        defaultClaimRate: parseClaimRate(defaultClaimRate) === null ? DEFAULT_CLAIM_RATE : defaultClaimRate,
+        defaultChargeRate,
+      }),
     )
   }, [user?.id, defaultClaimRate, defaultChargeRate])
 
@@ -1662,12 +1673,18 @@ const TrackerView = ({
       return
     }
 
+    const claimRate = parseClaimRate(formData.claimRate)
+    if (claimRate === null || totalClaim === null) {
+      toast({ title: "Check mileage and claim rate", description: CLAIM_RATE_HELP, variant: "destructive" })
+      return
+    }
+
     setIsSaving(true)
 
     try {
       const savedLocationCount =
         !editingId && quickDraft ? await saveParsedAdhocLocations(quickDraft, getCurrentFormRoutePointNames()) : 0
-      const entryData = { ...formData, totalClaim, totalCharge }
+      const entryData = { ...formData, claimRate: String(claimRate), totalClaim, totalCharge }
 
       if (editingId) {
         await onUpdateEntry(editingId, entryData)
@@ -1978,9 +1995,13 @@ const TrackerView = ({
       return
     }
 
-    const claimRate = defaultClaimRate
+    const claimRate = parseClaimRate(defaultClaimRate)
     const chargeRate = defaultChargeRate
-    const totalClaim = (Number.parseFloat(totalMiles) * Number.parseFloat(claimRate)).toFixed(2)
+    const totalClaim = claimForMiles(totalMiles, defaultClaimRate)
+    if (claimRate === null || totalClaim === null) {
+      toast({ title: "Check mileage and default claim rate", description: CLAIM_RATE_HELP, variant: "destructive" })
+      return
+    }
     const totalCharge = (Number.parseFloat(totalMiles) * Number.parseFloat(chargeRate)).toFixed(2)
 
     try {
@@ -2002,7 +2023,7 @@ const TrackerView = ({
         clientsVisited: trip.clientsVisited || "",
         description: trip.description || "",
         totalMiles,
-        claimRate,
+        claimRate: String(claimRate),
         chargeRate,
         totalClaim,
         totalCharge,
@@ -2171,11 +2192,12 @@ const TrackerView = ({
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
-            label={`Default Claim Rate (${DEFAULT_CURRENCY})`}
-            type="number"
+            label="Default claim rate (£ per mile)"
+            inputMode="decimal"
+            error={parseClaimRate(defaultClaimRate) === null ? CLAIM_RATE_HELP : undefined}
             value={defaultClaimRate}
             onChange={(e) => setDefaultClaimRate(e.target.value)}
-            placeholder="0.45"
+            placeholder="0.21"
           />
           <Input
             label={`Default Charge Rate (${DEFAULT_CURRENCY})`}
@@ -2787,8 +2809,10 @@ const TrackerView = ({
               </div>
               <div className="md:col-span-2">
                 <Input
-                  type="number"
-                  label={`Claim Rate (${DEFAULT_CURRENCY})`}
+                  inputMode="decimal"
+                  label="Claim rate (£ per mile)"
+                  placeholder="0.21"
+                  error={parseClaimRate(formData.claimRate) === null ? CLAIM_RATE_HELP : undefined}
                   value={formData.claimRate}
                   onChange={(e) => handleClaimRateChange(e.target.value)}
                 />
@@ -2801,7 +2825,8 @@ const TrackerView = ({
                     inputMode="decimal"
                     min="0"
                     step="0.01"
-                    value={claimAmountDraft ?? totalClaim}
+                    value={parseClaimRate(formData.claimRate) === null ? "" : (claimAmountDraft ?? totalClaim ?? "")}
+                    disabled={parseClaimRate(formData.claimRate) === null}
                     onChange={(e) => handleClaimAmountChange(e.target.value)}
                     onBlur={() => setClaimAmountDraft(null)}
                     className="w-full px-3 py-2 bg-white border border-emerald-200 rounded-lg font-bold text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
