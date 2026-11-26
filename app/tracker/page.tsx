@@ -2153,7 +2153,13 @@ const TrackerView = ({
       </Card>
 
       {/* Stats Bar */}
-      <KpiSummary miles={totals.miles.toFixed(1)} reimbursement={formatCurrency(totals.claim)} chargeOut={formatCurrency(totals.charge)} trips={String(filteredEntries.length)} />
+      <KpiSummary
+        miles={totals.miles.toFixed(1)}
+        reimbursement={formatCurrency(totals.claim)}
+        reimbursementRate={formatCurrency(parseClaimRate(defaultClaimRate) ?? DEFAULT_CLAIM_RATE)}
+        chargeOut={formatCurrency(totals.charge)}
+        trips={String(filteredEntries.length)}
+      />
       <div className="hidden grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
         <Card className="p-4 flex items-center justify-between bg-white">
           <div>
